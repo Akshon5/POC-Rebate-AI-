@@ -176,7 +176,7 @@ import { DataService } from '../../services/data.service';
               </div>
 
               <div class="audit-item citation-box">
-                <label>📌 Auditable Contract Citation</label>
+                <label>Auditable Contract Citation</label>
                 <p class="citation-text">"{{ selectedCalc()!.rule?.raw_text_citation }}"</p>
                 <span class="citation-stamp">Extract source: OCR Contract PDF</span>
               </div>
@@ -260,6 +260,11 @@ import { DataService } from '../../services/data.service';
       .main-grid {
         grid-template-columns: 1fr 400px;
       }
+    }
+
+    .calculations-section {
+      min-width: 0;
+      overflow: hidden;
     }
 
     .section-header {

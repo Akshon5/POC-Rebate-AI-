@@ -177,6 +177,28 @@ a:hover { color: var(--accent-hover); }
 }
 .nav-item.active svg { opacity: 1; color: #fff; }
 
+/* Admin section divider */
+.nav-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 12px 4px;
+}
+.nav-divider span {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.35);
+}
+.nav-divider::before {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255,255,255,0.1);
+}
+
+
 /* Footer */
 .sidebar-footer {
   border-top: 1px solid rgba(255,255,255,0.1);

@@ -10,6 +10,8 @@ class User(Base):
     username = Column(String, unique=True, index=True, nullable=False)
     password = Column(String, nullable=False)  # Simple password for POC demo
     role = Column(String, nullable=False, default="user")  # 'admin' or 'user'
+    full_name = Column(String, nullable=True)   # e.g. "Jane Doe"
+    email = Column(String, nullable=True)       # e.g. "jane@company.com"
 
 class Supplier(Base):
     __tablename__ = "suppliers"

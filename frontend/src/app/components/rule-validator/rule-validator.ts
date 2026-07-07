@@ -444,7 +444,7 @@ export class RuleValidatorComponent implements OnInit {
   }
 
   goToAdmin(): void {
-    this.router.navigate(['/admin']);
+    this.router.navigate(['/upload-review']);
   }
 
   // Allow custom handling of maximum tier (can be null/empty, standing for infinity)

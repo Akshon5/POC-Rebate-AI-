@@ -1,14 +1,22 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from pydantic import BaseModel, Field, model_validator
+from typing import Any, List, Optional
 from datetime import datetime
+import json
 
 # User Schemas
 class UserBase(BaseModel):
     username: str
 
-class UserCreate(UserBase):
+class UserCreateAdmin(BaseModel):
+    full_name: str
+    email: str
+    username: str
     password: str
     role: str = "user"  # 'admin' or 'user'
+
+class UserCreate(UserBase):
+    password: str
+    role: str = "user"
 
 class UserLogin(UserBase):
     password: str
@@ -16,6 +24,8 @@ class UserLogin(UserBase):
 class UserResponse(UserBase):
     id: int
     role: str
+    full_name: Optional[str] = None
+    email: Optional[str] = None
     class Config:
         from_attributes = True
 
@@ -50,6 +60,52 @@ class RebateRuleResponse(RebateRuleBase):
     id: int
     supplier_id: int
     updated_at: datetime
+    supplier_name: Optional[str] = None
+    
+    @model_validator(mode="before")
+    @classmethod
+    def parse_tiers_json(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "tiers" not in data or data["tiers"] is None:
+                tiers_json = data.get("tiers_json")
+                if tiers_json:
+                    try:
+                        data["tiers"] = json.loads(tiers_json)
+                    except Exception:
+                        data["tiers"] = []
+                else:
+                    data["tiers"] = []
+            return data
+            
+        # It's an ORM object
+        try:
+            # Set supplier_name from the relationship
+            supplier = getattr(data, "supplier", None)
+            if supplier:
+                setattr(data, "supplier_name", supplier.name)
+                
+            tiers = getattr(data, "tiers", None)
+            if not tiers:
+                tiers_json = getattr(data, "tiers_json", None)
+                parsed_tiers = []
+                if tiers_json:
+                    try:
+                        parsed_tiers = json.loads(tiers_json)
+                    except Exception:
+                        pass
+                # Map keys min/max to support alias config
+                mapped_tiers = []
+                for tier in parsed_tiers:
+                    mapped_tiers.append({
+                        "min": tier.get("min", tier.get("min_value", 0.0)),
+                        "max": tier.get("max", tier.get("max_value")),
+                        "rate": tier.get("rate", 0.0)
+                    })
+                setattr(data, "tiers", mapped_tiers)
+        except Exception:
+            pass
+        return data
+
     class Config:
         from_attributes = True
 

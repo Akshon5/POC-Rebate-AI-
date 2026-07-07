@@ -6,7 +6,10 @@ from typing import List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 import database, models, schemas
 from services.ocr import extract_text_from_pdf
@@ -29,28 +32,53 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Serve Angular frontend static files ──────────────────────────────────────
+_FRONTEND_DIR = os.path.normpath(os.path.join(
+    os.path.dirname(__file__),
+    "..", "frontend", "dist", "frontend", "browser"
+))
+
+if os.path.isdir(_FRONTEND_DIR):
+    print(f"Serving frontend from: {_FRONTEND_DIR}")
+else:
+    print(f"WARNING: Frontend build not found at {_FRONTEND_DIR} — run 'npm run build' in frontend/")
+
 # Create database tables
 models.Base.metadata.create_all(bind=database.engine)
 
 # Auto-seed database with default users and suppliers
 @app.on_event("startup")
 def seed_data():
+    # --- SQLite migration: add new columns if they don't exist yet ---
+    with database.engine.connect() as conn:
+        for col in ["full_name", "email"]:
+            try:
+                conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} TEXT"))
+                conn.commit()
+                print(f"Migration: added column '{col}' to users table.")
+            except Exception:
+                pass  # Column already exists
+
     db = database.SessionLocal()
     try:
         # Check if users already exist
         if not db.query(models.User).first():
-            # Add Admin user
-            admin_user = models.User(username="admin", password="password123", role="admin")
-            # Add Regular user
-            regular_user = models.User(username="user", password="password123", role="user")
+            admin_user = models.User(
+                username="admin", password="password123", role="admin",
+                full_name="System Admin", email="admin@company.com"
+            )
+            regular_user = models.User(
+                username="user", password="password123", role="user",
+                full_name="Demo User", email="user@company.com"
+            )
             db.add_all([admin_user, regular_user])
-            
+
         # Check if suppliers exist
         if not db.query(models.Supplier).first():
             dhl = models.Supplier(name="DHL Malaysia", code="DHL")
             junho = models.Supplier(name="Jun Ho Corp", code="JUNHO")
             db.add_all([dhl, junho])
-            
+
         db.commit()
     except Exception as e:
         print(f"Error seeding database: {e}")
@@ -73,6 +101,43 @@ def login(payload: schemas.UserLogin, db: Session = Depends(database.get_db)):
             detail="Invalid username or password"
         )
     return user
+
+
+
+# --- USER MANAGEMENT ENDPOINTS ---
+
+@app.get("/api/users", response_model=List[schemas.UserResponse])
+def get_users(db: Session = Depends(database.get_db)):
+    """List all users. Admin-only access should be enforced on the frontend."""
+    return db.query(models.User).all()
+
+@app.post("/api/users", response_model=schemas.UserResponse, status_code=201)
+def create_user(payload: schemas.UserCreateAdmin, db: Session = Depends(database.get_db)):
+    """Admin creates a new user with full_name, email, username, password, role."""
+    existing = db.query(models.User).filter(models.User.username == payload.username).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    new_user = models.User(
+        full_name=payload.full_name,
+        email=payload.email,
+        username=payload.username,
+        password=payload.password,
+        role=payload.role
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+@app.delete("/api/users/{user_id}", status_code=204)
+def delete_user(user_id: int, db: Session = Depends(database.get_db)):
+    """Admin deletes a user by ID."""
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    db.delete(user)
+    db.commit()
+    return None
 
 
 # --- SUPPLIER ENDPOINTS ---
@@ -467,7 +532,7 @@ def save_validated_rule(payload: schemas.RebateRuleCreate, db: Session = Depends
     ).first()
     
     # Serialize tiers list to JSON text for SQLite
-    serialized_tiers = json.dumps([tier.dict(by_alias=True) for tier in payload.tiers])
+    serialized_tiers = json.dumps([tier.model_dump(by_alias=True) for tier in payload.tiers])
     
     if existing:
         existing.rule_type = payload.rule_type
@@ -494,6 +559,55 @@ def save_validated_rule(payload: schemas.RebateRuleCreate, db: Session = Depends
         calculate_rebates_for_supplier(db, rule.supplier_id)
         
     return rule
+
+
+@app.post("/api/process/confirm")
+def confirm_process(payload: dict, db: Session = Depends(database.get_db)):
+    """
+    Called when the admin clicks 'Confirm' on Upload & Review step 3.
+    Saves the draft rule (from PDF extraction) as a validated rule.
+    """
+    draft = payload.get("draft_rule")
+    if not draft:
+        # No draft rule — just return success (sales-only upload)
+        return {"success": True, "message": "Sales data confirmed, no rule to save."}
+
+    # Validate the supplier exists
+    supplier = db.query(models.Supplier).filter(models.Supplier.id == draft.get("supplier_id")).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    # Serialize tiers
+    tiers = draft.get("tiers", [])
+    serialized_tiers = json.dumps(tiers)
+
+    # Upsert rule
+    existing = db.query(models.RebateRule).filter(
+        models.RebateRule.supplier_id == supplier.id,
+        models.RebateRule.name == draft.get("rule_name")
+    ).first()
+
+    if existing:
+        existing.rule_type = draft.get("rule_type", existing.rule_type)
+        existing.tiers_json = serialized_tiers
+        existing.raw_text_citation = draft.get("raw_text_citation", existing.raw_text_citation)
+        existing.is_validated = True
+        rule = existing
+    else:
+        rule = models.RebateRule(
+            supplier_id=supplier.id,
+            name=draft.get("rule_name", "Extracted Rule"),
+            rule_type=draft.get("rule_type", "revenue"),
+            tiers_json=serialized_tiers,
+            raw_text_citation=draft.get("raw_text_citation", ""),
+            is_validated=True
+        )
+        db.add(rule)
+
+    db.commit()
+    db.refresh(rule)
+    calculate_rebates_for_supplier(db, rule.supplier_id)
+    return {"success": True, "message": f"Rule '{rule.name}' saved and calculations updated."}
 
 
 # --- SALES UPLOAD & PARSING ENDPOINTS ---
@@ -673,6 +787,24 @@ def get_dashboard_calculations(db: Session = Depends(database.get_db)):
     return calculations
 
 
+# ── SPA catch-all: serve index.html for all non-API routes ──────────────────
+@app.get("/{full_path:path}")
+async def serve_angular(full_path: str):
+    """
+    Catch-all route: serves the Angular index.html for any path that isn't
+    an API route, so Angular's client-side router takes over.
+    """
+    index_file = os.path.join(_FRONTEND_DIR, "index.html")
+    # Try to serve the exact file first (JS/CSS chunks, favicon, etc.)
+    requested_file = os.path.join(_FRONTEND_DIR, full_path)
+    if full_path and os.path.isfile(requested_file):
+        return FileResponse(requested_file)
+    # Fall back to index.html for all Angular routes
+    if os.path.isfile(index_file):
+        return FileResponse(index_file)
+    return {"error": "Frontend not built yet. Run npm run build in the frontend folder."}
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

@@ -255,6 +255,11 @@ import { DataService } from '../../services/data.service';
             <button (click)="onReject()" class="btn-wizard-reject">
               ✕ Reject
             </button>
+            @if (uploadResponse()?.draft_rule) {
+              <button (click)="onSendToValidator()" class="btn-wizard-adjust">
+                ⚙ Review in Rule Validator
+              </button>
+            }
             <button (click)="onConfirm()" class="btn-wizard-confirm">
               ✔ Confirm & apply
             </button>
@@ -804,6 +809,23 @@ import { DataService } from '../../services/data.service';
       box-shadow: var(--shadow-sm);
     }
 
+    .btn-wizard-adjust {
+      padding: 10px 24px;
+      border: 1px solid var(--accent, #2b6cb0);
+      background-color: #ebf8ff;
+      color: var(--accent, #2b6cb0);
+      border-radius: var(--radius-md);
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: var(--ease);
+    }
+
+    .btn-wizard-adjust:hover {
+      background-color: var(--accent, #2b6cb0);
+      color: #ffffff;
+    }
+
     /* Utility */
     .font-bold { font-weight: 700; }
     .font-mono { font-family: SFMono-Regular, Consolas, Monaco, monospace; }
@@ -885,12 +907,35 @@ export class UploadReviewComponent {
 
     this.http.post('http://localhost:8000/api/process/confirm', payload).subscribe({
       next: () => {
+        // Clear any stale draft from localStorage
+        localStorage.removeItem('sales_condition_draft_rule');
         this.router.navigate(['/dashboard']);
       },
       error: (err) => {
-        this.errorMessage.set('Could not commit calculation confirmation.');
+        this.errorMessage.set('Could not commit calculation confirmation: ' + (err.error?.detail || 'Unknown error'));
       }
     });
+  }
+
+  /** Send the AI-extracted draft rule to the Rule Validator page for human review */
+  onSendToValidator(): void {
+    const draft = this.uploadResponse()?.draft_rule;
+    if (!draft) {
+      this.errorMessage.set('No contract PDF was uploaded — nothing to validate.');
+      return;
+    }
+    // Map backend draft_rule shape to the rule-validator DraftRule shape
+    const validatorDraft = {
+      supplier_id: draft.supplier_id,
+      supplier_name: draft.supplier_name,
+      supplier_code: draft.supplier_code,
+      rule_name: draft.rule_name,
+      rule_type: draft.rule_type,
+      tiers: draft.tiers,
+      raw_text_citation: draft.raw_text_citation
+    };
+    localStorage.setItem('sales_condition_draft_rule', JSON.stringify(validatorDraft));
+    this.router.navigate(['/validate']);
   }
 
   onReject(): void {

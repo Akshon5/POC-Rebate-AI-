@@ -4,6 +4,8 @@ export interface UserSession {
   id: number;
   username: string;
   role: string; // 'admin' or 'user'
+  full_name?: string;
+  email?: string;
 }
 
 @Injectable({

@@ -14,6 +14,19 @@ export class DataService {
     return this.http.post(`${this.apiUrl}/auth/login`, { username, password });
   }
 
+  // User Management (Admin)
+  getUsers(): Observable<any[]> {
+    return this.http.get<any[]>(`${this.apiUrl}/users`);
+  }
+
+  createUser(payload: { full_name: string; email: string; username: string; password: string; role: string }): Observable<any> {
+    return this.http.post(`${this.apiUrl}/users`, payload);
+  }
+
+  deleteUser(userId: number): Observable<void> {
+    return this.http.delete<void>(`${this.apiUrl}/users/${userId}`);
+  }
+
   // Suppliers
   getSuppliers(): Observable<any[]> {
     return this.http.get<any[]>(`${this.apiUrl}/suppliers`);
