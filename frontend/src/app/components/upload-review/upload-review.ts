@@ -884,7 +884,7 @@ export class UploadReviewComponent {
     }
 
     // Call process API
-    this.http.post<any>('http://localhost:8000/api/process', formData).subscribe({
+    this.http.post<any>('https://poc-rebate-ai-production.up.railway.app/api/process', formData).subscribe({
       next: (res) => {
         this.uploadResponse.set(res);
         // Simulate minor analysis delay for visual quality matching Legrand
@@ -906,7 +906,7 @@ export class UploadReviewComponent {
       pending_sales_rows: this.uploadResponse()?.pending_sales_rows ?? []
     };
 
-    this.http.post('http://localhost:8000/api/process/confirm', payload).subscribe({
+    this.http.post('https://poc-rebate-ai-production.up.railway.app/api/process/confirm', payload).subscribe({
       next: () => {
         // Clear any stale draft from localStorage
         localStorage.removeItem('sales_condition_draft_rule');
@@ -944,7 +944,7 @@ export class UploadReviewComponent {
       batch_id: this.uploadResponse()?.batch_id
     };
 
-    this.http.post('http://localhost:8000/api/process/reject', payload).subscribe({
+    this.http.post('https://poc-rebate-ai-production.up.railway.app/api/process/reject', payload).subscribe({
       next: () => {
         // Reset wizard
         this.rulesFile.set(null);
