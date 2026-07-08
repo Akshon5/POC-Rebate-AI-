@@ -227,8 +227,9 @@ async def process_wizard_documents(
 
     draft_rule = None
     upload_batch_id = str(uuid.uuid4())
-    inserted_records_count = 0
-    impacted_suppliers = set()
+    # pending_sales_rows: in-memory list of parsed rows — NOT written to DB here.
+    # Returned to frontend and sent back on /confirm to avoid duplicate writes on re-preview.
+    pending_sales_rows = []
 
     # 1. Process PDF Contract if uploaded
     if rules_file and rules_file.filename.lower().endswith(".pdf"):
@@ -258,7 +259,7 @@ async def process_wizard_documents(
             "raw_text_citation": extracted_data["raw_text_citation"]
         }
 
-    # 2. Process Excel Sales Register if uploaded
+    # 2. Parse Excel Sales Register into memory — do NOT write to DB yet.
     if sales_file and sales_file.filename.lower().endswith((".xlsx", ".xls")):
         excel_bytes = await sales_file.read()
         try:
@@ -305,7 +306,7 @@ async def process_wizard_documents(
                     item_id = str(row[col_mapping["item"]]).strip()
                     item_name = item_id
 
-                # Find or create supplier
+                # Find or create supplier in DB (needed for supplier_id lookup in preview)
                 supplier = db.query(models.Supplier).filter(
                     (models.Supplier.code == sup_val.upper()) | 
                     (models.Supplier.name == sup_val)
@@ -317,39 +318,45 @@ async def process_wizard_documents(
                     db.commit()
                     db.refresh(supplier)
 
-                # Save sales record in database under draft batch ID
-                sales_rec = models.SalesRecord(
-                    supplier_id=supplier.id,
-                    item_id=item_id,
-                    item_name=item_name,
-                    date=date_str,
-                    quantity=qty_val,
-                    revenue=rev_val,
-                    upload_batch_id=upload_batch_id
-                )
-                db.add(sales_rec)
-                inserted_records_count += 1
-                impacted_suppliers.add(supplier.id)
-            
-            db.commit()
+                # Stage row in memory only — written to DB on /confirm
+                pending_sales_rows.append({
+                    "supplier_id": supplier.id,
+                    "item_id": item_id,
+                    "item_name": item_name,
+                    "date": date_str,
+                    "quantity": qty_val,
+                    "revenue": rev_val,
+                })
 
-    # 3. Compute calculations dynamically for output preview
+    # 3. Compute preview calculations in-memory (no DB reads of pending rows)
     preview_calculations = []
     total_rebate_sum = 0.0
     rules_applied_count = 0
     rates_applied = []
 
-    # Get list of all suppliers we have sales records for (impacted in this upload + existing)
+    # Build an in-memory aggregation: supplier_id -> {revenue, quantity}
+    # from pending_sales_rows (new upload) + existing committed DB records.
+    from collections import defaultdict
+    agg: dict = defaultdict(lambda: {"revenue": 0.0, "quantity": 0.0})
+
+    # Existing committed sales in DB
+    for rec in db.query(models.SalesRecord).all():
+        agg[rec.supplier_id]["revenue"] += rec.revenue
+        agg[rec.supplier_id]["quantity"] += rec.quantity
+
+    # Newly parsed rows (not yet in DB)
+    for row in pending_sales_rows:
+        agg[row["supplier_id"]]["revenue"] += row["revenue"]
+        agg[row["supplier_id"]]["quantity"] += row["quantity"]
+
     all_suppliers = db.query(models.Supplier).all()
 
     for sup in all_suppliers:
-        # Check sales records for this supplier (including the new ones just uploaded)
-        sales_records = db.query(models.SalesRecord).filter(models.SalesRecord.supplier_id == sup.id).all()
-        if not sales_records:
+        if sup.id not in agg:
             continue
 
-        tot_rev = sum(item.revenue for item in sales_records)
-        tot_vol = sum(item.quantity for item in sales_records)
+        tot_rev = agg[sup.id]["revenue"]
+        tot_vol = agg[sup.id]["quantity"]
 
         # Check rule to apply:
         # If there's a draft rule for this supplier, use it. Otherwise, look for a validated rule.
@@ -387,9 +394,9 @@ async def process_wizard_documents(
         active_rate = 0.0
         active_tier_name = "Base"
 
-        tiers = sorted(rule_to_apply["tiers"], key=lambda x: x.get("min", 0))
+        tiers = sorted(rule_to_apply["tiers"], key=lambda x: x.get("min") if x.get("min") is not None else 0)
         for i, tier in enumerate(tiers):
-            t_min = tier.get("min", 0.0)
+            t_min = tier.get("min") if tier.get("min") is not None else 0.0
             t_max = tier.get("max")
             
             # Determine Tier name based on index/value
@@ -432,14 +439,15 @@ async def process_wizard_documents(
         "success": True,
         "batch_id": upload_batch_id,
         "summary": {
-            "total_records": inserted_records_count if inserted_records_count > 0 else len(preview_calculations) * 10,
+            "total_records": len(pending_sales_rows),  # real parsed row count
             "total_rebate": total_rebate_sum,
             "rules_applied": rules_applied_count,
             "avg_rebate_rate": avg_rate
         },
         "classification_rules": [draft_rule] if draft_rule else [],
         "rebate_calculations": preview_calculations,
-        "draft_rule": draft_rule
+        "draft_rule": draft_rule,
+        "pending_sales_rows": pending_sales_rows  # frontend sends this back on /confirm
     }
 
 
@@ -449,14 +457,30 @@ def confirm_wizard_processing(
     db: Session = Depends(database.get_db)
 ):
     """
-    Confirms and applies the draft rule and saves the sales batch.
+    Confirms the wizard: writes sales rows to DB and saves the validated rule.
+    Sales rows come from pending_sales_rows (parsed in /api/process, never written there).
     """
     batch_id = payload.get("batch_id")
     draft_rule_data = payload.get("draft_rule")
+    pending_sales_rows = payload.get("pending_sales_rows", [])
 
-    # 1. If draft rule exists, save it to DB as validated
+    # 1. Write the pending sales rows to DB now (first and only write)
+    for row in pending_sales_rows:
+        sales_rec = models.SalesRecord(
+            supplier_id=row["supplier_id"],
+            item_id=row["item_id"],
+            item_name=row["item_name"],
+            date=row["date"],
+            quantity=row["quantity"],
+            revenue=row["revenue"],
+            upload_batch_id=batch_id
+        )
+        db.add(sales_rec)
+    if pending_sales_rows:
+        db.commit()
+
+    # 2. If draft rule exists, save it to DB as validated
     if draft_rule_data:
-        # Check if rule exists
         existing = db.query(models.RebateRule).filter(
             models.RebateRule.supplier_id == draft_rule_data["supplier_id"],
             models.RebateRule.name == draft_rule_data["rule_name"]
@@ -483,16 +507,12 @@ def confirm_wizard_processing(
         
         db.commit()
         db.refresh(rule)
-
-        # Trigger rebate calculations for the supplier
         calculate_rebates_for_supplier(db, rule.supplier_id)
 
-    # 2. Trigger calculations for all other suppliers impacted in the batch
-    if batch_id:
-        impacted_sales = db.query(models.SalesRecord).filter(models.SalesRecord.upload_batch_id == batch_id).all()
-        supplier_ids = {s.supplier_id for s in impacted_sales}
-        for s_id in supplier_ids:
-            calculate_rebates_for_supplier(db, s_id)
+    # 3. Trigger calculations for all suppliers with rows in this batch
+    impacted_supplier_ids = {row["supplier_id"] for row in pending_sales_rows}
+    for s_id in impacted_supplier_ids:
+        calculate_rebates_for_supplier(db, s_id)
 
     return {"status": "confirmed"}
 
@@ -503,14 +523,10 @@ def reject_wizard_processing(
     db: Session = Depends(database.get_db)
 ):
     """
-    Rejects the batch, rolling back any sales records uploaded during process step.
+    Rejects the wizard batch. Sales rows were never written to DB in /api/process,
+    so no rollback is needed. This endpoint is now a no-op kept for API compatibility.
     """
-    batch_id = payload.get("batch_id")
-    if batch_id:
-        # Delete sales records belonging to this draft batch
-        db.query(models.SalesRecord).filter(models.SalesRecord.upload_batch_id == batch_id).delete()
-        db.commit()
-
+    # Nothing to undo — pending_sales_rows only existed in memory on the preview step.
     return {"status": "rejected"}
 
 

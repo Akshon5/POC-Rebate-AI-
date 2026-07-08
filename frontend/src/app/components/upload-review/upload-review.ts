@@ -902,7 +902,8 @@ export class UploadReviewComponent {
   onConfirm(): void {
     const payload = {
       batch_id: this.uploadResponse()?.batch_id,
-      draft_rule: this.uploadResponse()?.draft_rule
+      draft_rule: this.uploadResponse()?.draft_rule,
+      pending_sales_rows: this.uploadResponse()?.pending_sales_rows ?? []
     };
 
     this.http.post('http://localhost:8000/api/process/confirm', payload).subscribe({

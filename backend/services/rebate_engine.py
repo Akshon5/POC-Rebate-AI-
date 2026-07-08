@@ -38,7 +38,7 @@ def calculate_rebates_for_supplier(db: Session, supplier_id: int):
             continue
 
         # Sort tiers by min value just in case
-        tiers = sorted(tiers, key=lambda x: x.get("min", 0))
+        tiers = sorted(tiers, key=lambda x: x.get("min") if x.get("min") is not None else 0)
 
         # Determine comparison metric based on rule type
         metric_value = total_volume if rule.rule_type == "volume" else total_revenue
@@ -48,7 +48,7 @@ def calculate_rebates_for_supplier(db: Session, supplier_id: int):
         active_tier_index = -1
         
         for i, tier in enumerate(tiers):
-            t_min = tier.get("min", 0.0)
+            t_min = tier.get("min") if tier.get("min") is not None else 0.0
             t_max = tier.get("max")
             
             if t_max is None:

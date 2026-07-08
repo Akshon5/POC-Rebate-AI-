@@ -1,93 +1,88 @@
+import os
 import json
-import re
-from typing import Dict, Any, List
+from typing import Any, Dict, List, Optional
+
+from google import genai
+from google.genai import types
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class Tier(BaseModel):
+    min: Optional[float] = Field(None, description="Lower bound of the tier (inclusive). Use null if no lower limit.")
+    max: Optional[float] = Field(None, description="Upper bound of the tier (inclusive). Use null if no upper limit (open-ended).")
+    rate: Optional[float] = Field(None, description="Rebate rate as a decimal (e.g., 0.015 for 1.5%).")
+
+class RebateRule(BaseModel):
+    supplier_code: Optional[str] = Field(None, description="Short uppercase identifier, e.g., 'DHL', 'JUNHO', or null if not found.")
+    supplier_name: Optional[str] = Field(None, description="Full legal name of the supplier, or null if not found.")
+    rule_name: Optional[str] = Field(None, description="Descriptive name for this rebate rule.")
+    rule_type: Optional[str] = Field(None, description="Must be 'volume' (units/quantity) or 'revenue' (monetary spending/purchases).")
+    tiers: List[Tier] = Field(default_factory=list, description="List of rebate tiers.")
+    raw_text_citation: Optional[str] = Field(None, description="Verbatim quote or very close paraphrase of the specific contract sentence(s) defining the rebate rule.")
+
+_SYSTEM_PROMPT = """You are a contract analyst specialised in supplier rebate agreements.
+
+Your task: read the supplied contract text and extract the rebate rule into a structured JSON object.
+
+Rules you MUST follow:
+1. Every field value must come exclusively from what is explicitly stated in the contract text.
+   - If a field cannot be determined, return null for that field.
+   - Do NOT invent, guess, or fill in plausible-looking numbers.
+2. "rule_type" must be "volume" when the tier thresholds are expressed in units/quantities,
+   and "revenue" when they are expressed in monetary amounts. Return null if ambiguous.
+3. "tiers" must preserve the exact numeric boundaries and rates from the contract.
+   Represent rates as decimals (e.g., 2% → 0.02). An open-ended tier has max: null.
+4. "raw_text_citation" must be a verbatim quote or a very close paraphrase of the
+   specific sentence(s) in the contract that define the rebate structure.
+   It must NOT be generic boilerplate.
+5. Work correctly for contracts written in English or Vietnamese — do not make
+   language-specific assumptions about structure.
+"""
+
+def _get_client() -> genai.Client:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise EnvironmentError(
+            "GEMINI_API_KEY is not set. "
+            "Add it to your .env file or export it in the shell before starting the server."
+        )
+    return genai.Client(api_key=api_key)
 
 def extract_rebate_rules(text: str) -> Dict[str, Any]:
-    """
-    Simulates an LLM (Azure OpenAI) parsing raw contract text.
-    It parses either real or mocked text and returns structured rule data.
-    """
-    # Initialize defaults
-    supplier_code = "UNKNOWN"
-    supplier_name = "Unknown Supplier"
-    rule_name = "Volume/Revenue Rebate Agreement"
-    rule_type = "revenue"
-    tiers = []
-    citation = "Section details not found."
+    client = _get_client()
 
-    text_lower = text.lower()
+    user_message = (
+        "Extract the rebate rule from the following contract text.\n\n"
+        "CONTRACT TEXT:\n"
+        "---\n"
+        f"{text}\n"
+        "---"
+    )
 
-    # Case 1: DHL Contract
-    if "dhl" in text_lower:
-        supplier_code = "DHL"
-        supplier_name = "DHL Malaysia"
-        rule_name = "DHL volume-based shipment rebates 2025"
-        rule_type = "volume"
-        tiers = [
-            {"min": 0, "max": 5000, "rate": 0.010},
-            {"min": 5001, "max": 20000, "rate": 0.025},
-            {"min": 20001, "max": None, "rate": 0.045}
-        ]
-        citation = "Section 4: Rebate Structure. The rebates shall be calculated annually as a percentage of total shipment volume (quantity of units) as follows: From 0 to 5,000 units shipped: 1.0% rebate rate; 5,001 to 20,000 units: 2.5%; 20,001 units and above: 4.5%."
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=user_message,
+            config=types.GenerateContentConfig(
+                system_instruction=_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=RebateRule,
+                temperature=0.0,
+            ),
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Gemini API call failed: {type(exc).__name__}: {exc}") from exc
 
-    # Case 2: Jun Ho Contract
-    elif "jun" in text_lower or "ho" in text_lower:
-        supplier_code = "JUNHO"
-        supplier_name = "Jun Ho Corp"
-        rule_name = "Jun Ho revenue-based purchase rebates 2025"
-        rule_type = "revenue"
-        tiers = [
-            {"min": 0, "max": 50000, "rate": 0.000},
-            {"min": 50000, "max": 200000, "rate": 0.030},
-            {"min": 200000, "max": None, "rate": 0.055}
-        ]
-        citation = "Điều 6: Mức chiết khấu đạt được (Section 6: Rebate Tiers achieved). Tỷ lệ chiết khấu sẽ được tính dựa trên tổng giá trị mua hàng (doanh thu tính bằng USD) trong năm tài khóa: Dưới $50,000 USD: 0%; Từ $50,000 USD đến $200,000 USD: 3.0%; Trên $200,000 USD: 5.5%."
+    raw_text = response.text
 
-    # Case 3: Generic Fallback Parser (Basic regex matching for unknown PDFs)
-    else:
-        # Try to find a supplier name
-        supplier_match = re.search(r'(?:agreement with|between|supplier:)\s*([A-Za-z0-9 ]{3,30})', text, re.IGNORECASE)
-        if supplier_match:
-            supplier_name = supplier_match.group(1).strip()
-            supplier_code = re.sub(r'[^A-Z0-9]', '', supplier_name.upper())[:6]
-        
-        # Check if volume or revenue based
-        if "volume" in text_lower or "unit" in text_lower or "quantity" in text_lower:
-            rule_type = "volume"
-            rule_name = f"{supplier_name} Volume-Based Rebate"
-        else:
-            rule_type = "revenue"
-            rule_name = f"{supplier_name} Revenue-Based Rebate"
+    try:
+        result = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Gemini returned non-JSON output (parse error: {exc}). Raw response was:\n{raw_text[:500]}") from exc
 
-        # Look for percentages
-        pct_matches = re.findall(r'(\d+(?:\.\d+)?)\s*%', text)
-        rates = [float(p) / 100.0 for p in pct_matches] if pct_matches else [0.01, 0.02, 0.03]
-        
-        # Build simple incremental tiers
-        if len(rates) == 1:
-            tiers = [{"min": 0, "max": None, "rate": rates[0]}]
-        elif len(rates) == 2:
-            tiers = [
-                {"min": 0, "max": 10000, "rate": rates[0]},
-                {"min": 10001, "max": None, "rate": rates[1]}
-            ]
-        else:
-            tiers = [
-                {"min": 0, "max": 10000, "rate": rates[0] if len(rates) > 0 else 0.01},
-                {"min": 10001, "max": 50000, "rate": rates[1] if len(rates) > 1 else 0.02},
-                {"min": 50001, "max": None, "rate": rates[2] if len(rates) > 2 else 0.03}
-            ]
-        
-        # Search for a paragraph containing "rebate" to use as citation
-        sentences = re.split(r'\. |\n', text)
-        rebate_sentences = [s for s in sentences if "rebate" in s.lower() or "chiết khấu" in s.lower()]
-        citation = " ... ".join(rebate_sentences[:2]) if rebate_sentences else text[:300]
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Expected dict from Gemini, got {type(result)}")
 
-    return {
-        "supplier_code": supplier_code,
-        "supplier_name": supplier_name,
-        "rule_name": rule_name,
-        "rule_type": rule_type,
-        "tiers": tiers,
-        "raw_text_citation": citation
-    }
+    return result

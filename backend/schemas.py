@@ -31,7 +31,7 @@ class UserResponse(UserBase):
 
 # Rebate Rule Tier structure (individual tier object)
 class RebateTier(BaseModel):
-    min_value: float = Field(..., alias="min")
+    min_value: Optional[float] = Field(None, alias="min")
     max_value: Optional[float] = Field(None, alias="max")
     rate: float  # e.g., 0.02 for 2%
 
