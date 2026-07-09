@@ -164,12 +164,12 @@ import { DataService } from '../../services/data.service';
             <div class="results-col font-small">
               <div class="col-title-bar">
                 <h3>📋 Classification rules</h3>
-                <span class="col-badge">{{ uploadResponse()?.classification_rules?.length || 1 }} active</span>
+                <span class="col-badge">{{ uploadResponse()?.draft_rule?.all_rules?.length || 1 }} active</span>
               </div>
 
               <div class="rules-list-container">
-                @if (uploadResponse()?.classification_rules?.length) {
-                  @for (rule of uploadResponse()?.classification_rules; track rule.rule_name; let idx = $index) {
+                @if (uploadResponse()?.draft_rule?.all_rules?.length) {
+                  @for (rule of uploadResponse()?.draft_rule?.all_rules; track rule.rule_name; let idx = $index) {
                     <div class="rule-preview-item">
                       <div class="rule-meta">
                         <span class="rule-index">0{{ idx + 1 }}</span>
@@ -180,10 +180,17 @@ import { DataService } from '../../services/data.service';
                       <h4>{{ rule.rule_name }}</h4>
                       <p class="rule-citation">"{{ rule.raw_text_citation }}"</p>
                       <div class="rule-tiers-chips">
-                        @for (tier of rule.tiers; track tier.rate) {
+                        @if (rule.target && rule.rate) {
                           <span class="tier-chip">
-                            {{ formatTierLimit(tier) }}: <strong>{{ (tier.rate * 100).toFixed(2) }}%</strong>
+                            Target: {{ rule.target | number }}: <strong>{{ (rule.rate * 100).toFixed(2) }}%</strong>
                           </span>
+                          <span class="tier-chip">Period: <strong>{{ rule.period }}</strong></span>
+                        } @else {
+                          @for (tier of rule.tiers; track tier.rate) {
+                            <span class="tier-chip">
+                              {{ formatTierLimit(tier) }}: <strong>{{ (tier.rate * 100).toFixed(2) }}%</strong>
+                            </span>
+                          }
                         }
                       </div>
                     </div>
@@ -884,7 +891,8 @@ export class UploadReviewComponent {
     }
 
     // Call process API
-    this.http.post<any>('https://poc-rebate-ai-production.up.railway.app/api/process', formData).subscribe({
+    const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost:8000/api/process' : '/api/process';
+    this.http.post<any>(apiUrl, formData).subscribe({
       next: (res) => {
         this.uploadResponse.set(res);
         // Simulate minor analysis delay for visual quality matching Legrand
@@ -906,7 +914,8 @@ export class UploadReviewComponent {
       pending_sales_rows: this.uploadResponse()?.pending_sales_rows ?? []
     };
 
-    this.http.post('https://poc-rebate-ai-production.up.railway.app/api/process/confirm', payload).subscribe({
+    const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost:8000/api/process/confirm' : '/api/process/confirm';
+    this.http.post(apiUrl, payload).subscribe({
       next: () => {
         // Clear any stale draft from localStorage
         localStorage.removeItem('sales_condition_draft_rule');
@@ -944,7 +953,8 @@ export class UploadReviewComponent {
       batch_id: this.uploadResponse()?.batch_id
     };
 
-    this.http.post('https://poc-rebate-ai-production.up.railway.app/api/process/reject', payload).subscribe({
+    const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost:8000/api/process/reject' : '/api/process/reject';
+    this.http.post(apiUrl, payload).subscribe({
       next: () => {
         // Reset wizard
         this.rulesFile.set(null);

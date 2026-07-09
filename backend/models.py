@@ -33,7 +33,13 @@ class RebateRule(Base):
     rule_type = Column(String, nullable=False)  # 'volume' or 'revenue'
     
     # JSON-formatted string: [{"min": 0, "max": 10000, "rate": 0.01}, {"min": 10001, "max": 50000, "rate": 0.02}]
-    tiers_json = Column(Text, nullable=False)
+    tiers_json = Column(Text, nullable=False, default="[]")
+    
+    # Period-based flat target rule fields (Yearly, Q1, Q2, Q3, Q4)
+    period = Column(String, nullable=True, default="Yearly")  # 'Yearly', 'Q1', 'Q2', 'Q3', 'Q4'
+    year = Column(Integer, nullable=True, default=2025)
+    target = Column(Float, nullable=True)   # e.g., 2200000.0 — the flat sales target threshold
+    rate = Column(Float, nullable=True)     # e.g., 0.02 — flat rebate rate when target is met
     
     raw_text_citation = Column(Text, nullable=True)  # Quote/citation from PDF contract
     is_validated = Column(Boolean, default=False)  # For human-in-the-loop review
@@ -65,8 +71,10 @@ class CalculationResult(Base):
     calculation_date = Column(DateTime, default=datetime.utcnow)
     total_sales_value = Column(Float, default=0.0)
     total_sales_volume = Column(Float, default=0.0)
-    calculated_rebate = Column(Float, default=0.0)
-    achievement_percentage = Column(Float, default=0.0)  # e.g., how far along the active tier
+    calculated_rebate = Column(Float, default=0.0)       # Actual rebate earned
+    provisioned_rebate = Column(Float, default=0.0)      # Expected rebate if target fully met (target * rate)
+    achievement_percentage = Column(Float, default=0.0)  # % progress toward target
+    target_status = Column(String, default="Not Met")    # 'Met' or 'Not Met'
     
     supplier = relationship("Supplier", back_populates="calculations")
     rule = relationship("RebateRule", back_populates="calculations")

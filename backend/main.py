@@ -186,26 +186,31 @@ async def upload_contract(
     extracted_data = extract_rebate_rules(extracted_text)
     
     # 3. Check if supplier exists in DB, if not create a new one
-    supplier_code = extracted_data["supplier_code"]
+    supplier_code = extracted_data.get("supplier_code") or "UNKNOWN"
+    supplier_name = extracted_data.get("supplier_name") or "Unknown Supplier"
     supplier = db.query(models.Supplier).filter(models.Supplier.code == supplier_code).first()
     if not supplier:
-        supplier = models.Supplier(
-            name=extracted_data["supplier_name"],
-            code=supplier_code
-        )
+        supplier = models.Supplier(name=supplier_name, code=supplier_code)
         db.add(supplier)
         db.commit()
         db.refresh(supplier)
-        
-    # Return draft rule structure for frontend validation
+
+    # Return first rule as draft for backward compatibility with rule-validator UI
+    rules_list = extracted_data.get("rules", [])
+    first_rule = rules_list[0] if rules_list else {}
     return {
         "supplier_id": supplier.id,
         "supplier_name": supplier.name,
         "supplier_code": supplier.code,
-        "rule_name": extracted_data["rule_name"],
-        "rule_type": extracted_data["rule_type"],
-        "tiers": extracted_data["tiers"],
-        "raw_text_citation": extracted_data["raw_text_citation"]
+        "rule_name": first_rule.get("rule_name"),
+        "rule_type": first_rule.get("rule_type"),
+        "tiers": first_rule.get("tiers", []),
+        "period": first_rule.get("period", "Yearly"),
+        "year": first_rule.get("year"),
+        "target": first_rule.get("target"),
+        "rate": first_rule.get("rate"),
+        "raw_text_citation": first_rule.get("raw_text_citation"),
+        "all_rules": rules_list  # expose all extracted rules for inspection
     }
 
 
@@ -237,26 +242,37 @@ async def process_wizard_documents(
         extracted_text = extract_text_from_pdf(pdf_bytes, filename=rules_file.filename)
         extracted_data = extract_rebate_rules(extracted_text)
         
-        # Ensure supplier exists
-        supplier_code = extracted_data["supplier_code"]
-        supplier = db.query(models.Supplier).filter(models.Supplier.code == supplier_code).first()
+        # Ensure supplier exists by code OR by name
+        supplier_code = extracted_data.get("supplier_code") or "UNKNOWN"
+        supplier_name = extracted_data.get("supplier_name") or "Unknown Supplier"
+        
+        # Check by code first, then by name (case-insensitive)
+        supplier = db.query(models.Supplier).filter(
+            (models.Supplier.code == supplier_code) | 
+            (models.Supplier.name.ilike(supplier_name))
+        ).first()
+        
         if not supplier:
-            supplier = models.Supplier(
-                name=extracted_data["supplier_name"],
-                code=supplier_code
-            )
+            supplier = models.Supplier(name=supplier_name, code=supplier_code)
             db.add(supplier)
             db.commit()
             db.refresh(supplier)
 
+        rules_list = extracted_data.get("rules", [])
+        first_rule = rules_list[0] if rules_list else {}
         draft_rule = {
             "supplier_id": supplier.id,
             "supplier_name": supplier.name,
             "supplier_code": supplier.code,
-            "rule_name": extracted_data["rule_name"],
-            "rule_type": extracted_data["rule_type"],
-            "tiers": extracted_data["tiers"],
-            "raw_text_citation": extracted_data["raw_text_citation"]
+            "rule_name": first_rule.get("rule_name"),
+            "rule_type": first_rule.get("rule_type"),
+            "tiers": first_rule.get("tiers", []),
+            "period": first_rule.get("period", "Yearly"),
+            "year": first_rule.get("year"),
+            "target": first_rule.get("target"),
+            "rate": first_rule.get("rate"),
+            "raw_text_citation": first_rule.get("raw_text_citation"),
+            "all_rules": rules_list  # all periods sent to frontend, sent back on /confirm
         }
 
     # 2. Parse Excel Sales Register into memory — do NOT write to DB yet.
@@ -268,26 +284,47 @@ async def process_wizard_documents(
             raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {str(e)}")
 
         col_mapping = {}
+        sup_priority = 0  # 0=unset, 1=plain name, 2=description, 3=code+description (best)
         for col_name in df.columns:
             c_low = col_name.lower().strip()
-            if "supplier" in c_low or "vendor" in c_low:
-                col_mapping["supplier"] = col_name
-            elif "item" in c_low or "sku" in c_low:
+            is_customer = "customer" in c_low or "buyer" in c_low or "supplier" in c_low or "vendor" in c_low
+            if is_customer:
+                if "code" in c_low and "description" in c_low and sup_priority < 3:
+                    col_mapping["supplier"] = col_name; sup_priority = 3
+                elif "description" in c_low and sup_priority < 2:
+                    col_mapping["supplier"] = col_name; sup_priority = 2
+                elif sup_priority < 1:
+                    col_mapping["supplier"] = col_name; sup_priority = 1
+            elif ("item" in c_low or "sku" in c_low or "product" in c_low) and "item" not in col_mapping:
                 col_mapping["item"] = col_name
-            elif "date" in c_low:
+            elif "date" in c_low and "date" not in col_mapping:
                 col_mapping["date"] = col_name
-            elif "qty" in c_low or "quantity" in c_low or "volume" in c_low:
+            elif ("qty" in c_low or "quantity" in c_low or "billingqty" in c_low) and "quantity" not in col_mapping:
                 col_mapping["quantity"] = col_name
-            elif "revenue" in c_low or "sales" in c_low or "amount" in c_low or "value" in c_low:
+            elif ("amt" in c_low or "amount" in c_low or "revenue" in c_low or ("sales" in c_low and "order" not in c_low)) and "revenue" not in col_mapping:
                 col_mapping["revenue"] = col_name
 
-        required = ["supplier", "quantity", "revenue"]
+        required = ["supplier", "revenue"]
         missing = [r for r in required if r not in col_mapping]
         if not missing:
             for _, row in df.iterrows():
                 sup_val = str(row[col_mapping["supplier"]]).strip()
-                qty_val = float(row[col_mapping["quantity"]])
-                rev_val = float(row[col_mapping["revenue"]])
+                import math
+                raw_qty = row[col_mapping["quantity"]] if "quantity" in col_mapping else 1.0
+                try:
+                    qty_val = float(raw_qty) if raw_qty is not None and not (isinstance(raw_qty, float) and math.isnan(raw_qty)) else 1.0
+                except (TypeError, ValueError):
+                    qty_val = 1.0
+                try:
+                    rev_val = float(row[col_mapping["revenue"]])
+                except (TypeError, ValueError):
+                    rev_val = 0.0
+                
+                # Check for NaN values from Pandas
+                if not sup_val or sup_val.lower() == "nan":
+                    continue
+                if pd.isna(rev_val):
+                    rev_val = 0.0
                 
                 date_str = str(datetime.now().date())
                 if "date" in col_mapping:
@@ -306,17 +343,38 @@ async def process_wizard_documents(
                     item_id = str(row[col_mapping["item"]]).strip()
                     item_name = item_id
 
-                # Find or create supplier in DB (needed for supplier_id lookup in preview)
+                # Clean numeric prefix (e.g. "1000000001-Singapore Electrical Cust" -> "Singapore Electrical Cust")
+                clean_sup = sup_val
+                if "-" in sup_val:
+                    parts = [p.strip() for p in sup_val.split("-")]
+                    if parts[0].isdigit() and len(parts) > 1:
+                        clean_sup = parts[1]
+
+                # Find or create supplier in DB
                 supplier = db.query(models.Supplier).filter(
-                    (models.Supplier.code == sup_val.upper()) | 
-                    (models.Supplier.name == sup_val)
+                    (models.Supplier.code == clean_sup.upper()) | 
+                    (models.Supplier.name == clean_sup) |
+                    (models.Supplier.name.ilike(f"%{clean_sup}%"))
                 ).first()
                 
                 if not supplier:
-                    supplier = models.Supplier(name=sup_val, code=sup_val.upper()[:6])
-                    db.add(supplier)
-                    db.commit()
-                    db.refresh(supplier)
+                    # Generate a unique code — try 6-char prefix, increment if collision
+                    base_code = clean_sup.upper().replace(' ', '')[:6]
+                    code = base_code
+                    counter = 1
+                    while db.query(models.Supplier).filter(models.Supplier.code == code).first():
+                        code = base_code[:5] + str(counter)
+                        counter += 1
+                    try:
+                        supplier = models.Supplier(name=clean_sup, code=code)
+                        db.add(supplier)
+                        db.commit()
+                        db.refresh(supplier)
+                    except Exception:
+                        db.rollback()
+                        supplier = db.query(models.Supplier).filter(
+                            models.Supplier.name == clean_sup
+                        ).first()
 
                 # Stage row in memory only — written to DB on /confirm
                 pending_sales_rows.append({
@@ -479,35 +537,52 @@ def confirm_wizard_processing(
     if pending_sales_rows:
         db.commit()
 
-    # 2. If draft rule exists, save it to DB as validated
+    # 2. If draft rule exists, save ALL extracted rules to DB as validated
     if draft_rule_data:
-        existing = db.query(models.RebateRule).filter(
-            models.RebateRule.supplier_id == draft_rule_data["supplier_id"],
-            models.RebateRule.name == draft_rule_data["rule_name"]
-        ).first()
+        supplier_id = draft_rule_data["supplier_id"]
+        all_rules = draft_rule_data.get("all_rules") or [draft_rule_data]  # fallback to single rule
 
-        serialized_tiers = json.dumps(draft_rule_data["tiers"])
+        for rule_data in all_rules:
+            rule_name = rule_data.get("rule_name") or draft_rule_data.get("rule_name") or "Unnamed Rule"
+            rule_type = rule_data.get("rule_type") or "revenue"
+            serialized_tiers = json.dumps(rule_data.get("tiers") or [])
+            period = rule_data.get("period", "Yearly")
+            year = rule_data.get("year", 2025)
+            target = rule_data.get("target")
+            rate = rule_data.get("rate")
+            citation = rule_data.get("raw_text_citation")
 
-        if existing:
-            existing.rule_type = draft_rule_data["rule_type"]
-            existing.tiers_json = serialized_tiers
-            existing.raw_text_citation = draft_rule_data["raw_text_citation"]
-            existing.is_validated = True
-            rule = existing
-        else:
-            rule = models.RebateRule(
-                supplier_id=draft_rule_data["supplier_id"],
-                name=draft_rule_data["rule_name"],
-                rule_type=draft_rule_data["rule_type"],
-                tiers_json=serialized_tiers,
-                raw_text_citation=draft_rule_data["raw_text_citation"],
-                is_validated=True
-            )
-            db.add(rule)
-        
+            existing = db.query(models.RebateRule).filter(
+                models.RebateRule.supplier_id == supplier_id,
+                models.RebateRule.name == rule_name
+            ).first()
+
+            if existing:
+                existing.rule_type = rule_type
+                existing.tiers_json = serialized_tiers
+                existing.raw_text_citation = citation
+                existing.period = period
+                existing.year = year
+                existing.target = target
+                existing.rate = rate
+                existing.is_validated = True
+            else:
+                new_rule = models.RebateRule(
+                    supplier_id=supplier_id,
+                    name=rule_name,
+                    rule_type=rule_type,
+                    tiers_json=serialized_tiers,
+                    raw_text_citation=citation,
+                    period=period,
+                    year=year,
+                    target=target,
+                    rate=rate,
+                    is_validated=True
+                )
+                db.add(new_rule)
+
         db.commit()
-        db.refresh(rule)
-        calculate_rebates_for_supplier(db, rule.supplier_id)
+        calculate_rebates_for_supplier(db, supplier_id)
 
     # 3. Trigger calculations for all suppliers with rows in this batch
     impacted_supplier_ids = {row["supplier_id"] for row in pending_sales_rows}

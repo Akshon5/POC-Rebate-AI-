@@ -7,7 +7,7 @@ import { Observable } from 'rxjs';
 })
 export class DataService {
   private http = inject(HttpClient);
-  private apiUrl = 'https://poc-rebate-ai-production.up.railway.app/api';
+  private apiUrl = window.location.hostname === 'localhost' ? 'http://localhost:8000/api' : '/api';
 
   // Auth
   login(username: string, password: string): Observable<any> {

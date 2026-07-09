@@ -22,18 +22,28 @@ import { DataService } from '../../services/data.service';
       </div>
 
       <!-- KPI Grid -->
-      <div class="kpi-grid grid-cols-4">
+      <div class="kpi-grid">
         <!-- KPI Card 1 -->
-        <div class="kpi-card glass-panel kpi-accent-green">
+        <div class="kpi-card glass-panel kpi-accent-blue">
           <div class="kpi-header">
-            <span class="kpi-icon">💰</span>
-            <span class="kpi-title">Total Provisions</span>
+            <span class="kpi-icon">📊</span>
+            <span class="kpi-title">Total Estimated Rebate</span>
           </div>
-          <div class="kpi-value">{{ kpis().total_provisions | currency:'USD':'symbol':'1.2-2' }}</div>
-          <div class="kpi-meta">Earned rebate provisions</div>
+          <div class="kpi-value">{{ totalEstimatedRebate() | currency:'USD':'symbol':'1.0-0' }}</div>
+          <div class="kpi-meta">Provisioned target rebates</div>
         </div>
 
         <!-- KPI Card 2 -->
+        <div class="kpi-card glass-panel kpi-accent-green">
+          <div class="kpi-header">
+            <span class="kpi-icon">💰</span>
+            <span class="kpi-title">Total Actual Rebate</span>
+          </div>
+          <div class="kpi-value">{{ totalActualRebate() | currency:'USD':'symbol':'1.0-0' }}</div>
+          <div class="kpi-meta">Earned rebate provisions</div>
+        </div>
+
+        <!-- KPI Card 3 -->
         <div class="kpi-card glass-panel kpi-accent-blue">
           <div class="kpi-header">
             <span class="kpi-icon">🏢</span>
@@ -43,7 +53,7 @@ import { DataService } from '../../services/data.service';
           <div class="kpi-meta">Contracted suppliers</div>
         </div>
 
-        <!-- KPI Card 3 -->
+        <!-- KPI Card 4 -->
         <div class="kpi-card glass-panel kpi-accent-purple">
           <div class="kpi-header">
             <span class="kpi-icon">✅</span>
@@ -53,7 +63,7 @@ import { DataService } from '../../services/data.service';
           <div class="kpi-meta">Approved by admin</div>
         </div>
 
-        <!-- KPI Card 4 -->
+        <!-- KPI Card 5 -->
         <div class="kpi-card glass-panel kpi-accent-orange">
           <div class="kpi-header">
             <span class="kpi-icon">⏳</span>
@@ -92,12 +102,14 @@ import { DataService } from '../../services/data.service';
               <table>
                 <thead>
                   <tr>
-                    <th>Supplier</th>
-                    <th>Rule Model</th>
-                    <th>Sales Value (USD)</th>
-                    <th>Sales Volume</th>
-                    <th>Active Tier Progress</th>
-                    <th>Calculated Provision</th>
+                    <th>Buyer</th>
+                    <th class="numeric">Target</th>
+                    <th>Period</th>
+                    <th class="numeric">Rebate %</th>
+                    <th class="numeric">Total Provisioned Rebate</th>
+                    <th class="numeric">Actual Sales</th>
+                    <th class="numeric">Actual Rebate</th>
+                    <th>Target Status</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
@@ -106,26 +118,40 @@ import { DataService } from '../../services/data.service';
                     <tr [class.selected]="selectedCalc()?.id === calc.id">
                       <td>
                         <div class="supplier-info">
-                          <span class="sup-code">{{ calc.rule?.supplier_id ? getSupplierCode(calc.supplier_id) : 'SUP' }}</span>
                           <span class="sup-name">{{ getSupplierName(calc.supplier_id) }}</span>
                         </div>
                       </td>
+                      <td class="numeric">
+                        @if (calc.rule?.target) {
+                          {{ calc.rule.target | number:'1.0-0' }}
+                        } @else {
+                          -
+                        }
+                      </td>
                       <td>
-                        <span class="badge" [class.badge-volume]="calc.rule?.rule_type === 'volume'" [class.badge-revenue]="calc.rule?.rule_type === 'revenue'">
-                          {{ calc.rule?.rule_type === 'volume' ? 'Volume' : 'Revenue' }}
+                        {{ calc.rule?.period || 'Yearly' }} {{ calc.rule?.year ? "'" + (calc.rule.year.toString().slice(-2)) : '' }}
+                      </td>
+                      <td class="numeric">
+                        @if (calc.rule?.rate !== null && calc.rule?.rate !== undefined) {
+                          {{ calc.rule.rate * 100 | number:'1.0-1' }}%
+                        } @else {
+                          {{ getAppliedRate(calc) * 100 | number:'1.0-1' }}%
+                        }
+                      </td>
+                      <td class="numeric highlight-blue">
+                        {{ calc.provisioned_rebate | currency:'USD':'symbol':'1.0-0' }}
+                      </td>
+                      <td class="numeric">
+                        {{ calc.total_sales_value | currency:'USD':'symbol':'1.0-0' }}
+                      </td>
+                      <td class="numeric highlight">
+                        {{ calc.calculated_rebate | currency:'USD':'symbol':'1.0-0' }}
+                      </td>
+                      <td>
+                        <span class="badge" [class.badge-revenue]="calc.target_status !== 'Met'" [class.badge-volume]="calc.target_status === 'Met'">
+                          {{ calc.target_status }}
                         </span>
                       </td>
-                      <td class="numeric">{{ calc.total_sales_value | currency:'USD':'symbol':'1.0-0' }}</td>
-                      <td class="numeric">{{ calc.total_sales_volume | number:'1.0-0' }} units</td>
-                      <td>
-                        <div class="progress-container">
-                          <div class="progress-bar-bg">
-                            <div class="progress-bar-fill" [style.width.%]="calc.achievement_percentage"></div>
-                          </div>
-                          <span class="progress-text">{{ calc.achievement_percentage | number:'1.0-1' }}%</span>
-                        </div>
-                      </td>
-                      <td class="numeric highlight">{{ calc.calculated_rebate | currency:'USD':'symbol':'1.2-2' }}</td>
                       <td>
                         <button (click)="selectCalculation(calc)" class="btn-detail">
                           Audit Citation 🔍
@@ -210,7 +236,20 @@ import { DataService } from '../../services/data.service';
     }
 
     /* KPI Grid customization */
-    .kpi-grid { margin-bottom: 4px; }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(1, minmax(0, 1fr));
+      gap: 16px;
+      margin-bottom: 4px;
+    }
+    @media (min-width: 768px) {
+      .kpi-grid {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+      }
+    }
+    .highlight-blue {
+      color: var(--accent);
+    }
 
     .kpi-card {
       border-radius: var(--radius-lg);
@@ -605,6 +644,14 @@ export class DashboardComponent implements OnInit {
     top_supplier_rebates: []
   });
   calculations = signal<any[]>([]);
+
+  readonly totalEstimatedRebate = computed(() => {
+    return this.calculations().reduce((sum, calc) => sum + (calc.provisioned_rebate || 0.0), 0.0);
+  });
+
+  readonly totalActualRebate = computed(() => {
+    return this.calculations().reduce((sum, calc) => sum + (calc.calculated_rebate || 0.0), 0.0);
+  });
   suppliers = signal<any[]>([]);
   
   selectedCalc = signal<any | null>(null);

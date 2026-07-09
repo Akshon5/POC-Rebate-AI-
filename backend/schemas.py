@@ -42,7 +42,11 @@ class RebateTier(BaseModel):
 class RebateRuleBase(BaseModel):
     name: str
     rule_type: str  # 'volume' or 'revenue'
-    tiers: List[RebateTier]
+    tiers: List[RebateTier] = []
+    period: Optional[str] = "Yearly"     # 'Yearly', 'Q1', 'Q2', 'Q3', 'Q4'
+    year: Optional[int] = 2025
+    target: Optional[float] = None       # flat target threshold
+    rate: Optional[float] = None         # flat rebate rate
     raw_text_citation: Optional[str] = None
     is_validated: bool = False
 
@@ -145,7 +149,9 @@ class CalculationResultResponse(BaseModel):
     total_sales_value: float
     total_sales_volume: float
     calculated_rebate: float
+    provisioned_rebate: float = 0.0
     achievement_percentage: float
+    target_status: str = "Not Met"
     rule: Optional[RebateRuleResponse] = None
     class Config:
         from_attributes = True

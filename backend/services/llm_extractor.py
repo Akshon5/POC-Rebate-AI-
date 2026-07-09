@@ -15,30 +15,43 @@ class Tier(BaseModel):
     rate: Optional[float] = Field(None, description="Rebate rate as a decimal (e.g., 0.015 for 1.5%).")
 
 class RebateRule(BaseModel):
-    supplier_code: Optional[str] = Field(None, description="Short uppercase identifier, e.g., 'DHL', 'JUNHO', or null if not found.")
-    supplier_name: Optional[str] = Field(None, description="Full legal name of the supplier, or null if not found.")
-    rule_name: Optional[str] = Field(None, description="Descriptive name for this rebate rule.")
+    rule_name: Optional[str] = Field(None, description="Descriptive name, e.g. '2% on Q1 purchases' or 'Volume Tier Scheme'.")
     rule_type: Optional[str] = Field(None, description="Must be 'volume' (units/quantity) or 'revenue' (monetary spending/purchases).")
-    tiers: List[Tier] = Field(default_factory=list, description="List of rebate tiers.")
-    raw_text_citation: Optional[str] = Field(None, description="Verbatim quote or very close paraphrase of the specific contract sentence(s) defining the rebate rule.")
+    period: Optional[str] = Field("Yearly", description="The period this rule applies to. Must be exactly one of: 'Yearly', 'Q1', 'Q2', 'Q3', 'Q4'.")
+    year: Optional[int] = Field(None, description="The calendar year this rule applies to, e.g. 2025.")
+    target: Optional[float] = Field(None, description="For flat-target rules: the minimum sales threshold to qualify for the rebate (e.g. 550000.0). Leave null for multi-tiered rules.")
+    rate: Optional[float] = Field(None, description="For flat-target rules: the rebate rate as a decimal (e.g. 0.02 for 2%). Leave null for multi-tiered rules.")
+    tiers: List[Tier] = Field(default_factory=list, description="For progressive multi-tiered rules only. Leave empty if the rule has a flat target and rate.")
+    raw_text_citation: Optional[str] = Field(None, description="Verbatim quote or very close paraphrase of the specific contract sentence(s) defining this rule.")
+
+class RebateContractExtraction(BaseModel):
+    supplier_code: Optional[str] = Field(None, description="Short uppercase identifier for the customer/distributor, e.g., 'DHL', 'JUNHO', 'SGEC'.")
+    supplier_name: Optional[str] = Field(None, description="Full legal name of the CUSTOMER, BUYER, or DISTRIBUTOR receiving the rebate (e.g., 'Singapore Electrical Cust'). DO NOT extract the name of the manufacturer offering the rebate.eg:")
+    rules: List[RebateRule] = Field(default_factory=list, description="All rebate rules found in the contract (may include Yearly, Q1, Q2, Q3, Q4, and tiered rules).")
 
 _SYSTEM_PROMPT = """You are a contract analyst specialised in supplier rebate agreements.
 
-Your task: read the supplied contract text and extract the rebate rule into a structured JSON object.
+Your task: read the supplied contract text and extract ALL active rebate rules (including yearly, quarterly, and multi-tiered schemes) into a structured JSON object.
 
 Rules you MUST follow:
 1. Every field value must come exclusively from what is explicitly stated in the contract text.
    - If a field cannot be determined, return null for that field.
    - Do NOT invent, guess, or fill in plausible-looking numbers.
-2. "rule_type" must be "volume" when the tier thresholds are expressed in units/quantities,
-   and "revenue" when they are expressed in monetary amounts. Return null if ambiguous.
-3. "tiers" must preserve the exact numeric boundaries and rates from the contract.
-   Represent rates as decimals (e.g., 2% → 0.02). An open-ended tier has max: null.
-4. "raw_text_citation" must be a verbatim quote or a very close paraphrase of the
-   specific sentence(s) in the contract that define the rebate structure.
+2. Split DIFFERENT schemes into SEPARATE rule objects. For example, if a contract defines both:
+   - A Yearly target (e.g. "> $2.2M gets 2%") → create one rule with period="Yearly"
+   - Quarterly targets (e.g. "> $550k per Q1 gets 2%") → create FOUR separate rules with period="Q1", "Q2", "Q3", "Q4"
+3. For FLAT TARGET rules (a single threshold + a single rate), set:
+   - "target" = the threshold (e.g. 550000.0)
+   - "rate" = the rebate rate (e.g. 0.02)
+   - Leave "tiers" as an empty list.
+4. For PROGRESSIVE TIERED rules (e.g. 0–5k = 1%, 5k–10k = 2.5%, 10k+ = 3%), set:
+   - "tiers" = the list of tier objects with min/max/rate
+   - Leave "target" and "rate" as null.
+5. "rule_type" must be "volume" when tier thresholds are expressed in units/quantities,
+   and "revenue" when they are expressed in monetary amounts.
+6. "raw_text_citation" must be a verbatim quote of the specific sentence(s) that define each rule.
    It must NOT be generic boilerplate.
-5. Work correctly for contracts written in English or Vietnamese — do not make
-   language-specific assumptions about structure.
+7. Work correctly for contracts written in English or Vietnamese.
 """
 
 def _get_client() -> genai.Client:
@@ -54,7 +67,7 @@ def extract_rebate_rules(text: str) -> Dict[str, Any]:
     client = _get_client()
 
     user_message = (
-        "Extract the rebate rule from the following contract text.\n\n"
+        "Extract all rebate rules from the following contract text.\n\n"
         "CONTRACT TEXT:\n"
         "---\n"
         f"{text}\n"
@@ -68,7 +81,7 @@ def extract_rebate_rules(text: str) -> Dict[str, Any]:
             config=types.GenerateContentConfig(
                 system_instruction=_SYSTEM_PROMPT,
                 response_mime_type="application/json",
-                response_schema=RebateRule,
+                response_schema=RebateContractExtraction,
                 temperature=0.0,
             ),
         )

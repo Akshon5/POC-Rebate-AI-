@@ -10,6 +10,9 @@ interface RuleDisplay {
   tiers: { min: number; max: number | null; rate: number }[];
   citation: string | null;
   is_validated: boolean;
+  period?: string;
+  target?: number | null;
+  rate?: number | null;
 }
 
 @Component({
@@ -75,27 +78,36 @@ interface RuleDisplay {
                 </span>
               </div>
 
-              <!-- Tiers Table -->
+              <!-- Rule Configuration -->
               <div class="tiers-section">
-                <div class="tiers-label">Rebate Tiers</div>
-                <table class="tiers-table">
-                  <thead>
-                    <tr>
-                      <th>Min</th>
-                      <th>Max</th>
-                      <th>Rate</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    @for (tier of rule.tiers; track $index) {
+                @if (rule.rate !== null && rule.rate !== undefined && rule.tiers.length === 0) {
+                  <div class="tiers-label">Flat Target Rule</div>
+                  <div class="flat-target-info" style="display: flex; gap: 1rem; margin-top: 0.5rem; font-size: 0.85rem;">
+                    <span style="background: #eef2ff; color: #4338ca; padding: 4px 8px; border-radius: 4px;">Target: {{ rule.target ? formatNum(rule.target) : 'None (All Sales)' }}</span>
+                    <span style="background: #eef2ff; color: #4338ca; padding: 4px 8px; border-radius: 4px;">Rate: {{ (rule.rate * 100).toFixed(2) }}%</span>
+                    <span style="background: #f1f5f9; color: #475569; padding: 4px 8px; border-radius: 4px;">Period: {{ rule.period || 'Yearly' }}</span>
+                  </div>
+                } @else {
+                  <div class="tiers-label">Rebate Tiers</div>
+                  <table class="tiers-table">
+                    <thead>
                       <tr>
-                        <td>{{ formatNum(tier.min) }}</td>
-                        <td>{{ tier.max !== null ? formatNum(tier.max) : '∞' }}</td>
-                        <td class="rate-cell">{{ (tier.rate * 100).toFixed(2) }}%</td>
+                        <th>Min</th>
+                        <th>Max</th>
+                        <th>Rate</th>
                       </tr>
-                    }
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      @for (tier of rule.tiers; track $index) {
+                        <tr>
+                          <td>{{ formatNum(tier.min) }}</td>
+                          <td>{{ tier.max !== null ? formatNum(tier.max) : '∞' }}</td>
+                          <td class="rate-cell">{{ (tier.rate * 100).toFixed(2) }}%</td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                }
               </div>
 
               <!-- Citation -->
@@ -231,7 +243,10 @@ export class RebateRulesComponent implements OnInit {
           rule_type: r.rule_type,
           tiers: r.tiers || [],
           citation: r.raw_text_citation ?? null,
-          is_validated: r.is_validated
+          is_validated: r.is_validated,
+          period: r.period,
+          target: r.target,
+          rate: r.rate
         }));
         this.rules.set(mapped);
         this.validatedCount.set(mapped.filter(r => r.is_validated).length);
