@@ -42,7 +42,7 @@ interface RuleDisplay {
           </div>
           <div class="filter-group">
             <label class="filter-label">Filter by Supplier</label>
-            <select class="supplier-select" [(ngModel)]="selectedSupplier">
+            <select class="supplier-select" [ngModel]="selectedSupplier()" (ngModelChange)="selectedSupplier.set($event)">
               <option value="All">All Suppliers</option>
               @for (s of uniqueSuppliers(); track s) {
                 <option [value]="s">{{ s }}</option>
@@ -69,7 +69,7 @@ interface RuleDisplay {
         </div>
       } @else {
         <!-- Results count -->
-        <p class="results-count">Showing {{ filteredRules().length }} rule{{ filteredRules().length !== 1 ? 's' : '' }}{{ selectedSupplier !== 'All' ? ' for ' + selectedSupplier : '' }}</p>
+        <p class="results-count">Showing {{ filteredRules().length }} rule{{ filteredRules().length !== 1 ? 's' : '' }}{{ selectedSupplier() !== 'All' ? ' for ' + selectedSupplier() : '' }}</p>
 
         <!-- Rules Table -->
         <div class="table-wrap">
@@ -335,7 +335,7 @@ export class RebateRulesComponent implements OnInit {
   loading = signal(true);
   validatedCount = signal(0);
   pendingCount = signal(0);
-  selectedSupplier = 'All';
+  selectedSupplier = signal('All');
 
   uniqueSuppliers = computed(() => {
     const names = this.rules().map(r => r.supplier_name);
@@ -343,8 +343,8 @@ export class RebateRulesComponent implements OnInit {
   });
 
   filteredRules = computed(() => {
-    if (this.selectedSupplier === 'All') return this.rules();
-    return this.rules().filter(r => r.supplier_name === this.selectedSupplier);
+    if (this.selectedSupplier() === 'All') return this.rules();
+    return this.rules().filter(r => r.supplier_name === this.selectedSupplier());
   });
 
   ngOnInit() {

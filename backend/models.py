@@ -58,6 +58,9 @@ class SalesRecord(Base):
     date = Column(String, nullable=False)  # YYYY-MM-DD
     quantity = Column(Float, nullable=False)
     revenue = Column(Float, nullable=False)
+    revenue_local = Column(Float, nullable=False, default=0.0)
+    currency = Column(String, nullable=True, default="USD")
+    local_currency = Column(String, nullable=True, default="USD")
     upload_batch_id = Column(String, nullable=False)
     
     supplier = relationship("Supplier", back_populates="sales")
@@ -70,9 +73,17 @@ class CalculationResult(Base):
     rule_id = Column(Integer, ForeignKey("rebate_rules.id", ondelete="CASCADE"), nullable=False)
     calculation_date = Column(DateTime, default=datetime.utcnow)
     total_sales_value = Column(Float, default=0.0)
+    total_sales_value_local = Column(Float, default=0.0)
     total_sales_volume = Column(Float, default=0.0)
-    calculated_rebate = Column(Float, default=0.0)       # Actual rebate earned
-    provisioned_rebate = Column(Float, default=0.0)      # Expected rebate if target fully met (target * rate)
+    calculated_rebate = Column(Float, default=0.0)       # Actual rebate earned (transaction currency)
+    calculated_rebate_local = Column(Float, default=0.0) # Actual rebate earned (local currency)
+    calculated_rebate_usd = Column(Float, default=0.0)   # Actual rebate earned (USD, for global aggregation)
+    provisioned_rebate = Column(Float, default=0.0)      # Expected rebate (transaction currency)
+    provisioned_rebate_local = Column(Float, default=0.0)# Expected rebate (local currency)
+    provisioned_rebate_usd = Column(Float, default=0.0)  # Expected rebate (USD)
+    total_sales_value_usd = Column(Float, default=0.0)   # Total sales value in USD (for KPI aggregation)
+    currency = Column(String, nullable=True, default="USD")
+    local_currency = Column(String, nullable=True, default="USD")
     achievement_percentage = Column(Float, default=0.0)  # % progress toward target
     target_status = Column(String, default="Not Met")    # 'Met' or 'Not Met'
     

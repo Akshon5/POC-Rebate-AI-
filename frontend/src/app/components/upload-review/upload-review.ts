@@ -237,7 +237,12 @@ import { DataService } from '../../services/data.service';
                         <td class="font-bold">{{ calc.account }}</td>
                         <td>{{ calc.category }}</td>
                         <td>{{ calc.region }}</td>
-                        <td class="font-mono">{{ formatCurrency(calc.net_sales) }}</td>
+                        <td class="font-mono">
+                          <div>{{ formatCurrency(calc.net_sales, calc.currency) }}</div>
+                          @if (calc.local_currency && calc.local_currency !== calc.currency && calc.net_sales_local) {
+                            <div style="font-size: 0.72rem; color: #9ca3af; font-style: italic; font-weight: normal;">{{ formatCurrency(calc.net_sales_local, calc.local_currency) }}</div>
+                          }
+                        </td>
                         <td>
                           <span class="badge" 
                             [class.badge-success]="calc.tier === 'Platinum' || calc.tier === 'Gold'"
@@ -247,7 +252,12 @@ import { DataService } from '../../services/data.service';
                           </span>
                         </td>
                         <td class="font-mono">{{ (calc.rate * 100).toFixed(2) }}%</td>
-                        <td class="font-bold font-mono text-green">{{ formatCurrency(calc.rebate) }}</td>
+                        <td class="font-bold font-mono text-green">
+                          <div>{{ formatCurrency(calc.rebate, calc.currency) }}</div>
+                          @if (calc.local_currency && calc.local_currency !== calc.currency && calc.rebate_local) {
+                            <div style="font-size: 0.72rem; color: #9ca3af; font-style: italic; font-weight: normal;">{{ formatCurrency(calc.rebate_local, calc.local_currency) }}</div>
+                          }
+                        </td>
                       </tr>
                     }
                   </tbody>
@@ -891,8 +901,7 @@ export class UploadReviewComponent {
     }
 
     // Call process API
-    const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost:8000/api/process' : '/api/process';
-    this.http.post<any>(apiUrl, formData).subscribe({
+    this.http.post<any>('/api/process', formData).subscribe({
       next: (res) => {
         this.uploadResponse.set(res);
         // Simulate minor analysis delay for visual quality matching Legrand
@@ -914,8 +923,7 @@ export class UploadReviewComponent {
       pending_sales_rows: this.uploadResponse()?.pending_sales_rows ?? []
     };
 
-    const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost:8000/api/process/confirm' : '/api/process/confirm';
-    this.http.post(apiUrl, payload).subscribe({
+    this.http.post('/api/process/confirm', payload).subscribe({
       next: () => {
         // Clear any stale draft from localStorage
         localStorage.removeItem('sales_condition_draft_rule');
@@ -953,8 +961,7 @@ export class UploadReviewComponent {
       batch_id: this.uploadResponse()?.batch_id
     };
 
-    const apiUrl = window.location.hostname === 'localhost' ? 'http://localhost:8000/api/process/reject' : '/api/process/reject';
-    this.http.post(apiUrl, payload).subscribe({
+    this.http.post('/api/process/reject', payload).subscribe({
       next: () => {
         // Reset wizard
         this.rulesFile.set(null);
@@ -969,9 +976,13 @@ export class UploadReviewComponent {
   }
 
   // --- Formatting Helpers ---
-  formatCurrency(value: number | undefined): string {
+  formatCurrency(value: number | undefined, currencyCode: string = 'USD'): string {
     if (value === undefined || value === null) return '$0.00';
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+    try {
+      return new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(value);
+    } catch {
+      return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+    }
   }
 
   formatNumber(value: number | undefined): string {

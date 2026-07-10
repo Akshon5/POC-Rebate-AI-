@@ -136,6 +136,9 @@ class SalesRecordResponse(BaseModel):
     date: str
     quantity: float
     revenue: float
+    revenue_local: float
+    currency: Optional[str] = "USD"
+    local_currency: Optional[str] = "USD"
     upload_batch_id: str
     class Config:
         from_attributes = True
@@ -147,9 +150,17 @@ class CalculationResultResponse(BaseModel):
     rule_id: int
     calculation_date: datetime
     total_sales_value: float
+    total_sales_value_local: float
+    total_sales_value_usd: float = 0.0
     total_sales_volume: float
     calculated_rebate: float
+    calculated_rebate_local: float
+    calculated_rebate_usd: float = 0.0
     provisioned_rebate: float = 0.0
+    provisioned_rebate_local: float = 0.0
+    provisioned_rebate_usd: float = 0.0
+    currency: Optional[str] = "USD"
+    local_currency: Optional[str] = "USD"
     achievement_percentage: float
     target_status: str = "Not Met"
     rule: Optional[RebateRuleResponse] = None
@@ -159,7 +170,8 @@ class CalculationResultResponse(BaseModel):
 # Dashboard KPI Schema
 class DashboardKpis(BaseModel):
     total_provisions: float
+    total_provisions_currency: str = "USD"   # Always USD — neutral aggregation currency
     active_suppliers_count: int
     rules_validated_count: int
     rules_pending_count: int
-    top_supplier_rebates: List[dict]  # list of {name, rebate}
+    top_supplier_rebates: List[dict]  # list of {name, rebate, currency}

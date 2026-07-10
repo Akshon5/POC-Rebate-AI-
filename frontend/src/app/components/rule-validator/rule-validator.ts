@@ -48,8 +48,8 @@ interface DraftRule {
           <div class="quick-test-section">
             <p>Or load a sample draft to test the review console:</p>
             <div class="test-buttons">
-              <button (click)="loadSampleDraft('dhl')" class="btn-secondary">Load Sample DHL Draft</button>
-              <button (click)="loadSampleDraft('junho')" class="btn-secondary">Load Sample Jun Ho Draft</button>
+              <button (click)="loadSampleDraft('dhl')" class="btn-secondary">Load Sample Draft (Volume-Based)</button>
+              <button (click)="loadSampleDraft('junho')" class="btn-secondary">Load Sample Draft (Revenue-Based)</button>
             </div>
           </div>
         </div>

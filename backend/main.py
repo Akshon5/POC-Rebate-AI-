@@ -15,6 +15,55 @@ import database, models, schemas
 from services.ocr import extract_text_from_pdf
 from services.llm_extractor import extract_rebate_rules
 from services.rebate_engine import calculate_rebates_for_supplier
+from services.currency_service import to_usd
+
+def clean_float(val, default=0.0) -> float:
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        import math
+        return float(val) if not math.isnan(val) else default
+    
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "nat", "null", "none", "-"):
+        return default
+        
+    # Remove common currency descriptors / symbols
+    for prefix in ["S$", "SG$", "$", "US$", "USD", "SGD", "VND", "đ", "EUR", "GBP"]:
+        if s.upper().startswith(prefix):
+            s = s[len(prefix):].strip()
+        if s.upper().endswith(prefix):
+            s = s[:-len(prefix)].strip()
+
+    # Clean character separators
+    commas = s.count(',')
+    dots = s.count('.')
+    
+    if commas > 0 and dots > 0:
+        if s.rfind('.') > s.rfind(','):
+            s = s.replace(',', '')
+        else:
+            s = s.replace('.', '').replace(',', '.')
+    elif commas > 1:
+        s = s.replace(',', '')
+    elif dots > 1:
+        s = s.replace('.', '')
+    elif commas == 1 and dots == 0:
+        parts = s.split(',')
+        if len(parts[1]) == 3:
+            s = s.replace(',', '')
+        else:
+            s = s.replace(',', '.')
+
+    try:
+        return float(s)
+    except ValueError:
+        import re
+        s_clean = re.sub(r'[^\d\.\-]', '', s)
+        try:
+            return float(s_clean)
+        except ValueError:
+            return default
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -286,7 +335,7 @@ async def process_wizard_documents(
         col_mapping = {}
         sup_priority = 0  # 0=unset, 1=plain name, 2=description, 3=code+description (best)
         for col_name in df.columns:
-            c_low = col_name.lower().strip()
+            c_low = col_name.lower().strip().replace(" ", "").replace("_", "")
             is_customer = "customer" in c_low or "buyer" in c_low or "supplier" in c_low or "vendor" in c_low
             if is_customer:
                 if "code" in c_low and "description" in c_low and sup_priority < 3:
@@ -301,30 +350,62 @@ async def process_wizard_documents(
                 col_mapping["date"] = col_name
             elif ("qty" in c_low or "quantity" in c_low or "billingqty" in c_low) and "quantity" not in col_mapping:
                 col_mapping["quantity"] = col_name
-            elif ("amt" in c_low or "amount" in c_low or "revenue" in c_low or ("sales" in c_low and "order" not in c_low)) and "revenue" not in col_mapping:
-                col_mapping["revenue"] = col_name
+            elif ("netamounttransac" in c_low or "transacamount" in c_low or "amounttransac" in c_low) and "revenue_transac" not in col_mapping:
+                col_mapping["revenue_transac"] = col_name
+            elif ("netamountlocal" in c_low or "localamount" in c_low or "amountlocal" in c_low) and "revenue_local" not in col_mapping:
+                col_mapping["revenue_local"] = col_name
+            elif ("transactioncurrency" in c_low or "transaccrcy" in c_low) and "transaction_currency" not in col_mapping:
+                col_mapping["transaction_currency"] = col_name
+            elif ("localcurrency" in c_low or "localcrcy" in c_low) and "local_currency" not in col_mapping:
+                col_mapping["local_currency"] = col_name
+            elif ("amt" in c_low or "amount" in c_low or "revenue" in c_low or ("sales" in c_low and "order" not in c_low)) and "general_revenue" not in col_mapping:
+                col_mapping["general_revenue"] = col_name
 
+        # Resolve revenue mapping
+        if "revenue_transac" in col_mapping:
+            col_mapping["revenue"] = col_mapping["revenue_transac"]
+        elif "general_revenue" in col_mapping:
+            col_mapping["revenue"] = col_mapping["general_revenue"]
+        if "revenue_local" not in col_mapping:
+            col_mapping["revenue_local"] = col_mapping.get("revenue")
+
+        print("DEBUG EXCEL COLUMNS DETECTED:", df.columns.tolist())
+        print("DEBUG RESOLVED COLUMN MAP:", col_mapping)
         required = ["supplier", "revenue"]
         missing = [r for r in required if r not in col_mapping]
         if not missing:
             for _, row in df.iterrows():
                 sup_val = str(row[col_mapping["supplier"]]).strip()
-                import math
-                raw_qty = row[col_mapping["quantity"]] if "quantity" in col_mapping else 1.0
-                try:
-                    qty_val = float(raw_qty) if raw_qty is not None and not (isinstance(raw_qty, float) and math.isnan(raw_qty)) else 1.0
-                except (TypeError, ValueError):
-                    qty_val = 1.0
-                try:
-                    rev_val = float(row[col_mapping["revenue"]])
-                except (TypeError, ValueError):
-                    rev_val = 0.0
+                if not sup_val or sup_val.lower() in ("nan", "nat", "null", "none", ""):
+                    continue
+
+                qty_val = clean_float(row[col_mapping["quantity"]], 1.0) if "quantity" in col_mapping else 1.0
+                rev_val = clean_float(row[col_mapping["revenue"]], 0.0)
+
+                if _ < 5:
+                    print(f"DEBUG ROW {_}: Raw Supplier={row.get(col_mapping.get('supplier'))}, Raw Revenue={row.get(col_mapping.get('revenue'))}")
+                    print(f"DEBUG ROW {_} PARSED: Cleaned Supplier={sup_val}, Cleaned Qty={qty_val}, Cleaned Revenue={rev_val}")
+                rev_local_val = clean_float(row[col_mapping["revenue_local"]], rev_val) if "revenue_local" in col_mapping and row[col_mapping["revenue_local"]] is not None else rev_val
+
+                currency_val = "USD"
+                if "transaction_currency" in col_mapping:
+                    currency_val = str(row[col_mapping["transaction_currency"]]).strip().upper()
+                    if not currency_val or currency_val.lower() == "nan":
+                        currency_val = "USD"
+
+                local_currency_val = "USD"
+                if "local_currency" in col_mapping:
+                    local_currency_val = str(row[col_mapping["local_currency"]]).strip().upper()
+                    if not local_currency_val or local_currency_val.lower() == "nan":
+                        local_currency_val = "USD"
                 
-                # Check for NaN values from Pandas
-                if not sup_val or sup_val.lower() == "nan":
+                # Check for NaN/NaT values from Pandas (fallback check)
+                if not sup_val or sup_val.lower() in ("nan", "nat", "null", "none", ""):
                     continue
                 if pd.isna(rev_val):
                     rev_val = 0.0
+                if pd.isna(rev_local_val):
+                    rev_local_val = 0.0
                 
                 date_str = str(datetime.now().date())
                 if "date" in col_mapping:
@@ -384,6 +465,9 @@ async def process_wizard_documents(
                     "date": date_str,
                     "quantity": qty_val,
                     "revenue": rev_val,
+                    "revenue_local": rev_local_val,
+                    "currency": currency_val,
+                    "local_currency": local_currency_val
                 })
 
     # 3. Compute preview calculations in-memory (no DB reads of pending rows)
@@ -392,20 +476,33 @@ async def process_wizard_documents(
     rules_applied_count = 0
     rates_applied = []
 
-    # Build an in-memory aggregation: supplier_id -> {revenue, quantity}
-    # from pending_sales_rows (new upload) + existing committed DB records.
+    # Build an in-memory aggregation: supplier_id -> {revenue, quantity, revenue_local, currency, local_currency}
     from collections import defaultdict
-    agg: dict = defaultdict(lambda: {"revenue": 0.0, "quantity": 0.0})
+    agg = defaultdict(lambda: {
+        "revenue": 0.0,
+        "quantity": 0.0,
+        "revenue_local": 0.0,
+        "currency": "USD",
+        "local_currency": "USD"
+    })
 
     # Existing committed sales in DB
     for rec in db.query(models.SalesRecord).all():
-        agg[rec.supplier_id]["revenue"] += rec.revenue
-        agg[rec.supplier_id]["quantity"] += rec.quantity
+        agg[rec.supplier_id]["revenue"] += (rec.revenue or 0.0)
+        agg[rec.supplier_id]["revenue_local"] += (getattr(rec, "revenue_local", None) or rec.revenue or 0.0)
+        agg[rec.supplier_id]["quantity"] += (rec.quantity or 0.0)
+        if getattr(rec, "currency", None):
+            agg[rec.supplier_id]["currency"] = rec.currency
+        if getattr(rec, "local_currency", None):
+            agg[rec.supplier_id]["local_currency"] = rec.local_currency
 
     # Newly parsed rows (not yet in DB)
     for row in pending_sales_rows:
-        agg[row["supplier_id"]]["revenue"] += row["revenue"]
-        agg[row["supplier_id"]]["quantity"] += row["quantity"]
+        agg[row["supplier_id"]]["revenue"] += (row.get("revenue") or 0.0)
+        agg[row["supplier_id"]]["revenue_local"] += (row.get("revenue_local") or row.get("revenue") or 0.0)
+        agg[row["supplier_id"]]["quantity"] += (row.get("quantity") or 0.0)
+        agg[row["supplier_id"]]["currency"] = row.get("currency", "USD")
+        agg[row["supplier_id"]]["local_currency"] = row.get("local_currency", "USD")
 
     all_suppliers = db.query(models.Supplier).all()
 
@@ -414,7 +511,10 @@ async def process_wizard_documents(
             continue
 
         tot_rev = agg[sup.id]["revenue"]
+        tot_rev_local = agg[sup.id]["revenue_local"]
         tot_vol = agg[sup.id]["quantity"]
+        currency = agg[sup.id]["currency"]
+        local_currency = agg[sup.id]["local_currency"]
 
         # Check rule to apply:
         # If there's a draft rule for this supplier, use it. Otherwise, look for a validated rule.
@@ -434,7 +534,11 @@ async def process_wizard_documents(
                     rule_to_apply = {
                         "rule_name": db_rule.name,
                         "rule_type": db_rule.rule_type,
-                        "tiers": json.loads(db_rule.tiers_json)
+                        "tiers": json.loads(db_rule.tiers_json),
+                        "period": db_rule.period,
+                        "year": db_rule.year,
+                        "target": db_rule.target,
+                        "rate": db_rule.rate
                     }
                 except:
                     pass
@@ -447,32 +551,51 @@ async def process_wizard_documents(
                 "tiers": [{"min": 0, "max": None, "rate": 0.015}]
             }
 
-        # Apply calculation logic
-        metric_val = tot_vol if rule_to_apply["rule_type"] == "volume" else tot_rev
+        # Apply calculation logic mirroring rebate_engine.py
         active_rate = 0.0
         active_tier_name = "Base"
 
-        tiers = sorted(rule_to_apply["tiers"], key=lambda x: x.get("min") if x.get("min") is not None else 0)
-        for i, tier in enumerate(tiers):
-            t_min = tier.get("min") if tier.get("min") is not None else 0.0
-            t_max = tier.get("max")
-            
-            # Determine Tier name based on index/value
-            tier_lbl = "Bronze" if i == 0 else ("Silver" if i == 1 else ("Gold" if i == 2 else "Platinum"))
-            
-            if t_max is None:
-                if metric_val >= t_min:
-                    active_rate = tier.get("rate", 0.0)
-                    active_tier_name = tier_lbl
-                    break
+        target = rule_to_apply.get("target")
+        flat_rate = rule_to_apply.get("rate")
+
+        if target is not None and flat_rate is not None:
+            metric_val = tot_vol if rule_to_apply["rule_type"] == "volume" else tot_rev
+            if metric_val >= target:
+                active_rate = flat_rate
+                active_tier_name = "Met"
             else:
-                if t_min <= metric_val <= t_max:
-                    active_rate = tier.get("rate", 0.0)
-                    active_tier_name = tier_lbl
-                    break
+                active_rate = 0.0
+                active_tier_name = "Not Met"
+        elif target is None and flat_rate is not None and (not rule_to_apply.get("tiers") or rule_to_apply.get("tiers") == []):
+            active_rate = flat_rate
+            active_tier_name = "Met"
+        else:
+            metric_val = tot_vol if rule_to_apply["rule_type"] == "volume" else tot_rev
+            tiers = sorted(rule_to_apply.get("tiers", []), key=lambda x: x.get("min") if x.get("min") is not None else 0)
+            for i, tier in enumerate(tiers):
+                t_min = tier.get("min") if tier.get("min") is not None else 0.0
+                t_max = tier.get("max")
+                
+                tier_lbl = "Bronze" if i == 0 else ("Silver" if i == 1 else ("Gold" if i == 2 else "Platinum"))
+                
+                if t_max is None:
+                    if metric_val >= t_min:
+                        active_rate = tier.get("rate", 0.0)
+                        active_tier_name = tier_lbl
+                        break
+                else:
+                    if t_min <= metric_val <= t_max:
+                        active_rate = tier.get("rate", 0.0)
+                        active_tier_name = tier_lbl
+                        break
 
         rebate = tot_rev * active_rate
-        total_rebate_sum += rebate
+        rebate_local = tot_rev_local * active_rate
+        rebate_usd = to_usd(rebate, currency)          # Convert to USD for neutral aggregation
+        net_sales_usd = to_usd(tot_rev, currency)
+        
+        # Accumulate rebate in USD for the global dashboard KPI sum consistency
+        total_rebate_sum += rebate_usd
         rules_applied_count += 1
         rates_applied.append(active_rate)
 
@@ -485,9 +608,15 @@ async def process_wizard_documents(
             "category": category,
             "region": region,
             "net_sales": tot_rev,
+            "net_sales_local": tot_rev_local,
+            "net_sales_usd": net_sales_usd,
             "tier": active_tier_name,
             "rate": active_rate,
             "rebate": rebate,
+            "rebate_local": rebate_local,
+            "rebate_usd": rebate_usd,
+            "currency": currency,
+            "local_currency": local_currency,
             "is_draft": is_draft
         })
 
@@ -531,6 +660,9 @@ def confirm_wizard_processing(
             date=row["date"],
             quantity=row["quantity"],
             revenue=row["revenue"],
+            revenue_local=row.get("revenue_local", row["revenue"]),
+            currency=row.get("currency", "USD"),
+            local_currency=row.get("local_currency", "USD"),
             upload_batch_id=batch_id
         )
         db.add(sales_rec)
@@ -727,14 +859,9 @@ async def upload_sales_register(
         raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {str(e)}")
         
     # Check headers and map dynamically
-    # Look for Supplier, Date, Quantity/Volume, Revenue/Sales/Amount
-    cols = [c.lower().strip() for c in df.columns]
-    
     col_mapping = {}
-    
-    # Mappings
     for col_name in df.columns:
-        c_low = col_name.lower().strip()
+        c_low = col_name.lower().strip().replace(" ", "").replace("_", "")
         if "supplier" in c_low or "vendor" in c_low:
             col_mapping["supplier"] = col_name
         elif "item" in c_low or "sku" in c_low:
@@ -743,8 +870,25 @@ async def upload_sales_register(
             col_mapping["date"] = col_name
         elif "qty" in c_low or "quantity" in c_low or "volume" in c_low:
             col_mapping["quantity"] = col_name
-        elif "revenue" in c_low or "sales" in c_low or "amount" in c_low or "value" in c_low:
-            col_mapping["revenue"] = col_name
+        elif ("transactioncurrency" in c_low or "transaccrcy" in c_low) and "transaction_currency" not in col_mapping:
+            col_mapping["transaction_currency"] = col_name
+        elif ("localcurrency" in c_low or "localcrcy" in c_low) and "local_currency" not in col_mapping:
+            col_mapping["local_currency"] = col_name
+        elif ("netamounttransac" in c_low or "transacamount" in c_low or "amounttransac" in c_low) and "revenue_transac" not in col_mapping:
+            col_mapping["revenue_transac"] = col_name
+        elif ("netamountlocal" in c_low or "localamount" in c_low or "amountlocal" in c_low) and "revenue_local" not in col_mapping:
+            col_mapping["revenue_local"] = col_name
+        elif ("amt" in c_low or "amount" in c_low or "revenue" in c_low or ("sales" in c_low and "order" not in c_low)) and "general_revenue" not in col_mapping:
+            col_mapping["general_revenue"] = col_name
+
+    # Resolve revenue mapping
+    if "revenue_transac" in col_mapping:
+        col_mapping["revenue"] = col_mapping["revenue_transac"]
+    elif "general_revenue" in col_mapping:
+        col_mapping["revenue"] = col_mapping["general_revenue"]
+
+    if "revenue_local" not in col_mapping:
+        col_mapping["revenue_local"] = col_mapping.get("revenue")
 
     # Validate essential columns
     required = ["supplier", "quantity", "revenue"]
@@ -763,8 +907,23 @@ async def upload_sales_register(
     # Iterate rows
     for _, row in df.iterrows():
         sup_val = str(row[col_mapping["supplier"]]).strip()
-        qty_val = float(row[col_mapping["quantity"]])
-        rev_val = float(row[col_mapping["revenue"]])
+        if not sup_val or sup_val.lower() in ("nan", "nat", "null", "none", ""):
+            continue
+        qty_val = clean_float(row[col_mapping["quantity"]], 1.0)
+        rev_val = clean_float(row[col_mapping["revenue"]], 0.0)
+        rev_local_val = clean_float(row[col_mapping["revenue_local"]], rev_val) if "revenue_local" in col_mapping and row[col_mapping["revenue_local"]] is not None else rev_val
+
+        currency_val = "USD"
+        if "transaction_currency" in col_mapping:
+            currency_val = str(row[col_mapping["transaction_currency"]]).strip().upper()
+            if not currency_val or currency_val.lower() == "nan":
+                currency_val = "USD"
+
+        local_currency_val = "USD"
+        if "local_currency" in col_mapping:
+            local_currency_val = str(row[col_mapping["local_currency"]]).strip().upper()
+            if not local_currency_val or local_currency_val.lower() == "nan":
+                local_currency_val = "USD"
         
         # Date defaults to today if not provided or invalid
         date_str = str(datetime.now().date())
@@ -806,6 +965,9 @@ async def upload_sales_register(
             date=date_str,
             quantity=qty_val,
             revenue=rev_val,
+            revenue_local=rev_local_val,
+            currency=currency_val,
+            local_currency=local_currency_val,
             upload_batch_id=upload_batch_id
         )
         db.add(sales_rec)
@@ -833,9 +995,9 @@ async def upload_sales_register(
 
 @app.get("/api/dashboard/kpis", response_model=schemas.DashboardKpis)
 def get_dashboard_kpis(db: Session = Depends(database.get_db)):
-    # 1. Total Provisions Earned
+    # 1. Total Provisions Earned — always in USD (neutral currency for cross-country aggregation)
     results = db.query(models.CalculationResult).all()
-    total_provisions = sum(res.calculated_rebate for res in results)
+    total_provisions = sum(getattr(res, "calculated_rebate_usd", None) or to_usd(res.calculated_rebate, getattr(res, "currency", "USD")) for res in results)
     
     # 2. Counts
     active_suppliers_count = db.query(models.Supplier).count()
@@ -847,17 +1009,20 @@ def get_dashboard_kpis(db: Session = Depends(database.get_db)):
     supplier_rebates = {}
     for res in results:
         sup_name = res.supplier.name
-        supplier_rebates[sup_name] = supplier_rebates.get(sup_name, 0.0) + res.calculated_rebate
+        # Use USD for aggregation so cross-currency suppliers are comparable
+        rebate_usd = getattr(res, "calculated_rebate_usd", None) or to_usd(res.calculated_rebate, getattr(res, "currency", "USD"))
+        supplier_rebates[sup_name] = supplier_rebates.get(sup_name, 0.0) + rebate_usd
         
     top_supplier_rebates = [
-        {"name": name, "rebate": round(rebate, 2)} 
+        {"name": name, "rebate": round(rebate, 2), "currency": "USD"} 
         for name, rebate in supplier_rebates.items()
     ]
     # Sort descending
     top_supplier_rebates = sorted(top_supplier_rebates, key=lambda x: x["rebate"], reverse=True)[:5]
 
     return schemas.DashboardKpis(
-        total_provisions=total_provisions,
+        total_provisions=round(total_provisions, 2),
+        total_provisions_currency="USD",
         active_suppliers_count=active_suppliers_count,
         rules_validated_count=rules_validated_count,
         rules_pending_count=rules_pending_count,

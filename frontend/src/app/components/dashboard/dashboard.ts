@@ -30,7 +30,7 @@ import { DataService } from '../../services/data.service';
             <span class="kpi-title">Total Estimated Rebate</span>
           </div>
           <div class="kpi-value">{{ totalEstimatedRebate() | currency:'USD':'symbol':'1.0-0' }}</div>
-          <div class="kpi-meta">Provisioned target rebates</div>
+          <div class="kpi-meta">Provisioned target rebates <span class="currency-badge">USD</span></div>
         </div>
 
         <!-- KPI Card 2 -->
@@ -40,7 +40,7 @@ import { DataService } from '../../services/data.service';
             <span class="kpi-title">Total Actual Rebate</span>
           </div>
           <div class="kpi-value">{{ totalActualRebate() | currency:'USD':'symbol':'1.0-0' }}</div>
-          <div class="kpi-meta">Earned rebate provisions</div>
+          <div class="kpi-meta">Earned rebate provisions <span class="currency-badge">USD</span></div>
         </div>
 
         <!-- KPI Card 3 -->
@@ -137,15 +137,23 @@ import { DataService } from '../../services/data.service';
                         } @else {
                           {{ getAppliedRate(calc) * 100 | number:'1.0-1' }}%
                         }
-                      </td>
                       <td class="numeric highlight-blue">
-                        {{ calc.provisioned_rebate | currency:'USD':'symbol':'1.0-0' }}
+                        <div class="curr-val">{{ calc.provisioned_rebate | currency:(calc.currency || 'USD'):'symbol':'1.0-0' }}</div>
+                        @if (calc.currency && calc.currency !== 'USD' && calc.provisioned_rebate_usd) {
+                          <div class="local-val">≈ {{ calc.provisioned_rebate_usd | currency:'USD':'symbol':'1.0-0' }}</div>
+                        }
                       </td>
                       <td class="numeric">
-                        {{ calc.total_sales_value | currency:'USD':'symbol':'1.0-0' }}
+                        <div class="curr-val">{{ calc.total_sales_value | currency:(calc.currency || 'USD'):'symbol':'1.0-0' }}</div>
+                        @if (calc.currency && calc.currency !== 'USD' && calc.total_sales_value_usd) {
+                          <div class="local-val">≈ {{ calc.total_sales_value_usd | currency:'USD':'symbol':'1.0-0' }}</div>
+                        }
                       </td>
                       <td class="numeric highlight">
-                        {{ calc.calculated_rebate | currency:'USD':'symbol':'1.0-0' }}
+                        <div class="curr-val">{{ calc.calculated_rebate | currency:(calc.currency || 'USD'):'symbol':'1.0-0' }}</div>
+                        @if (calc.currency && calc.currency !== 'USD' && calc.calculated_rebate_usd) {
+                          <div class="local-val">≈ {{ calc.calculated_rebate_usd | currency:'USD':'symbol':'1.0-0' }}</div>
+                        }
                       </td>
                       <td>
                         <span class="badge" [class.badge-revenue]="calc.target_status !== 'Met'" [class.badge-volume]="calc.target_status === 'Met'">
@@ -193,7 +201,7 @@ import { DataService } from '../../services/data.service';
                         {{ tier.min | number }} 
                         @if (tier.max) { to {{ tier.max | number }} } 
                         @else { and above }
-                        {{ selectedCalc()!.rule?.rule_type === 'volume' ? 'units' : 'USD' }}
+                        {{ selectedCalc()!.rule?.rule_type === 'volume' ? 'units' : (selectedCalc()!.currency || 'USD') }}
                       </span>
                       <span class="tier-rate">{{ tier.rate * 100 | number:'1.1-2' }}% rebate</span>
                     </div>
@@ -437,6 +445,32 @@ import { DataService } from '../../services/data.service';
       text-align: right;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
+    }
+
+    .curr-val {
+      font-weight: 600;
+    }
+
+    .local-val {
+      font-size: 0.72rem;
+      color: var(--text-muted, #9ca3af);
+      font-weight: 400;
+      margin-top: 2px;
+      font-style: italic;
+    }
+
+    .currency-badge {
+      display: inline-block;
+      font-size: 0.6rem;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: rgba(255,255,255,0.25);
+      color: inherit;
+      letter-spacing: 0.5px;
+      vertical-align: middle;
+      margin-left: 4px;
+      opacity: 0.8;
     }
 
     .numeric.highlight { color: var(--color-success); }
