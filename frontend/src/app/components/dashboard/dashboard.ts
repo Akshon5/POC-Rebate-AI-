@@ -75,7 +75,7 @@ import { DataService } from '../../services/data.service';
       </div>
 
       <!-- Main Layout: Calculations Table & Auditing Panel -->
-      <div class="main-grid">
+      <div class="main-grid" [class.audit-open]="selectedCalc()">
         <!-- Left Column: Rebate Calculations Table -->
         <div class="calculations-section glass-panel">
           <div class="section-header">
@@ -296,7 +296,7 @@ import { DataService } from '../../services/data.service';
     }
 
     @media (min-width: 1200px) {
-      .main-grid {
+      .main-grid.audit-open {
         grid-template-columns: 1fr 400px;
       }
     }
@@ -353,6 +353,10 @@ import { DataService } from '../../services/data.service';
       outline: none;
       border-color: var(--accent);
       box-shadow: 0 0 0 2px var(--accent-subtle);
+    }
+
+    .table-container {
+      overflow-x: auto;
     }
 
     .empty-state {
@@ -418,6 +422,15 @@ import { DataService } from '../../services/data.service';
       background-color: var(--accent-subtle);
       color: var(--accent);
       border: 1px solid var(--accent-border);
+    }
+
+    table {
+      width: 100%;
+      min-width: max-content;
+    }
+
+    table th, table td {
+      white-space: nowrap;
     }
 
     .numeric {

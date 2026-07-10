@@ -25,8 +25,22 @@ class RebateRule(BaseModel):
     raw_text_citation: Optional[str] = Field(None, description="Verbatim quote or very close paraphrase of the specific contract sentence(s) defining this rule.")
 
 class RebateContractExtraction(BaseModel):
-    supplier_code: Optional[str] = Field(None, description="Short uppercase identifier for the customer/distributor, e.g., 'DHL', 'JUNHO', 'SGEC'.")
-    supplier_name: Optional[str] = Field(None, description="Full legal name of the CUSTOMER, BUYER, or DISTRIBUTOR receiving the rebate (e.g., 'Singapore Electrical Cust'). DO NOT extract the name of the manufacturer offering the rebate.eg:")
+    supplier_code: Optional[str] = Field(
+        None,
+        description=(
+            "Short uppercase abbreviation of supplier_name for the rebate recipient "
+            "(e.g. 'Beta Trading Pte Ltd' → 'BETATRD'). Return null if supplier_name is null."
+        ),
+    )
+    supplier_name: Optional[str] = Field(
+        None,
+        description=(
+            "Legal name of the rebate RECIPIENT — the party whose purchases, volume, or "
+            "revenue are measured to calculate the rebate. This must be the buyer/customer "
+            "that appears in sales registers, NOT the manufacturer, seller, vendor, or "
+            "supplier who grants the rebate. Return null if the recipient is not named."
+        ),
+    )
     rules: List[RebateRule] = Field(default_factory=list, description="All rebate rules found in the contract (may include Yearly, Q1, Q2, Q3, Q4, and tiered rules).")
 
 _SYSTEM_PROMPT = """You are a contract analyst specialised in supplier rebate agreements.
@@ -52,6 +66,28 @@ Rules you MUST follow:
 6. "raw_text_citation" must be a verbatim quote of the specific sentence(s) that define each rule.
    It must NOT be generic boilerplate.
 7. Work correctly for contracts written in English or Vietnamese.
+8. supplier_name and supplier_code identify the REBATE RECIPIENT — the party whose purchases,
+   volume, or revenue are measured to calculate the rebate. This entity must match the
+   buyer/customer name in sales register data. Apply by contract type:
+   a) DISTRIBUTION AGREEMENT (Manufacturer/Seller grants rebate on Distributor/Buyer purchases):
+      → supplier_name = the Distributor or Buyer. NEVER the Manufacturer or Seller.
+      Example: "Acme Manufacturing Ltd" (Manufacturer) + "Beta Trading Pte Ltd" (Distributor)
+      with rebate on Distributor purchases → supplier_name = "Beta Trading Pte Ltd".
+   b) VENDOR/SUPPLIER REBATE AGREEMENT (Supplier/Vendor grants rebate to a Client/Customer):
+      → supplier_name = the Client, Customer, Contracting Client, or Purchasing party.
+      NEVER the Supplier or Vendor who pays the rebate.
+      Example: "LogiCo Services Ltd" (Supplier) rebates "Purchasing Client" on volume
+      → supplier_name = "Purchasing Client" (or null if the client is not named).
+   c) BILINGUAL Vietnamese/English (Bên A / Bên B or Nhà cung cấp):
+      → supplier_name = Bên A, Purchasing Client, or Buyer — the party whose cumulative
+      purchases/revenue are measured. Nhà cung cấp / Bên B / Supplier is usually NOT
+      the rebate recipient.
+      Example: "XYZ Corp" (Nhà cung cấp/Supplier) + "ABC Purchasing Ltd" (Bên A)
+      with rebate on Bên A revenue → supplier_name = "ABC Purchasing Ltd".
+   If the rebate recipient is not named anywhere in the contract, return null for both
+   supplier_name and supplier_code. Do NOT substitute the granting party's name.
+   supplier_code: derive a short uppercase abbreviation from supplier_name only
+   (e.g. "Beta Trading Pte Ltd" → "BETATRD"). Null if supplier_name is null.
 """
 
 def _get_client() -> genai.Client:

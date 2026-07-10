@@ -80,6 +80,14 @@ def calculate_rebates_for_supplier(db: Session, supplier_id: int):
                 calculated_rebate = 0.0
                 achievement_percentage = round((period_revenue / target) * 100.0, 2) if target > 0 else 0.0
 
+        # --- Flat Rate Rule without target (unconditional rebate) ---
+        elif rule.target is None and rule.rate is not None and (not rule.tiers_json or rule.tiers_json == '[]'):
+            flat_rate = rule.rate
+            provisioned_rebate = round(period_revenue * flat_rate, 2)
+            calculated_rebate = round(period_revenue * flat_rate, 2)
+            target_status = "Met"
+            achievement_percentage = 100.0
+
         # --- Multi-Tiered Rule (has tiers, no flat target) ---
         else:
             provisioned_rebate = 0.0
